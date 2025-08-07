@@ -1,0 +1,19 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 50  # Hz
+
+    arm_controller:
+      type: position_controllers/JointGroupPositionController
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+arm_controller:
+  ros__parameters:
+    joints:
+      - waist
+      - shoulder
+      - elbow
+      - forearm_roll
+      - wrist_angle
+      - wrist_rotate

@@ -1,0 +1,22 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/mattia/gz_ros2_control_ws/install/gz_ros2_control/include/**",
+        "/opt/ros/humble/include/**",
+        "/home/mattia/interbotix_ws/src/interbotix_ros_manipulators/interbotix_ros_xsarms/clik1_node_pkg/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ros2",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++17"
+    }
+  ],
+  "version": 4
+}

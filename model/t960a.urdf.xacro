@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<robot name="t960a" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Import t960a_base -->
+  <xacro:include filename="t960a_base.urdf.xacro"/>
+
+  <!-- Import wx250s arm -->
+  <xacro:include filename="wx250s_sim.urdf"/>
+
+  <!-- Attach the arm to the drone -->
+  <joint name="drone_arm" type="fixed">
+    <parent link="base_link"/>
+    <child link="mobile_wx250s/base_link"/>
+    <origin xyz="0.4265 0 -0.063" rpy="3.14 0 0"/>
+  </joint>
+
+</robot>

@@ -1,0 +1,23 @@
+{
+    // Configurazione per il debug di clik_uam_node.cpp in ROS2 Humble
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug clik_uam_node",
+            "type": "cppdbg",
+            "miDebuggerServerAddress": "localhost:3000",
+            "request": "launch",
+            "program": "/home/mattia/interbotix_ws/install/clik1_node_pkg/lib/clik1_node_pkg/clik_uam_node",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "/home/mattia/interbotix_ws",
+            "environment": [
+                {
+                    "name": "ROS_DOMAIN_ID",
+                    "value": "0"
+                }
+            ],
+            "MIMode": "gdb",
+        }
+    ]
+}

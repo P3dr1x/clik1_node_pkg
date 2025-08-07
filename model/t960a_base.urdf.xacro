@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<robot name="t960a_base" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <link name="base_link">
+    <!-- 
+      PROPRIETÀ INERZIALI COMBINATE (BASE INTERA):  (LE ELICHE NON SONO STATE CONSIDERATE!)
+      ATTENZIONE: Questi valori devono essere calcolati combinando le inerzie
+      di tutte le parti (corpo, eliche, carrelli) usando il Teorema degli Assi Paralleli.
+      I valori qui presenti sono solo un placeholder.
+    -->
+    <inertial>
+      <origin xyz="-0.130293 0 -0.053333" rpy="0 0 0"/>
+      <mass value="7.6065"/> <!-- Massa totale calcolata (COMPRENSIVA DI ELICHE m_eliche = 0.034*6 = 0.204 kg)-->
+      <inertia ixx="0.436577" ixy="0.0" ixz="0.0" iyy="0.684398" iyz="0.0" izz="0.844458"/> <!-- Inerzia totale calcolata -->
+    </inertial>
+
+    <!-- Visual e Collision del corpo principale -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://clik1_node_pkg/model/meshes/drone_v2_1/corpo1_visual.obj" scale="0.01 0.01 0.01"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://clik1_node_pkg/model/meshes/drone_v2_1/corpo1_visual.obj" scale="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+
+    <!-- Visual e Collision delle 6 eliche -->
+    <xacro:macro name="propeller_geometry" params="num xyz_pos">
+      <visual>
+        <origin xyz="${xyz_pos}" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://clik1_node_pkg/model/meshes/propeller_v2_${num}/corpo1_visual.obj" scale="0.01 0.01 0.01"/>
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="${xyz_pos}" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.4578 0.046 0.014"/>
+        </geometry>
+      </collision>
+    </xacro:macro>
+
+    <xacro:propeller_geometry num="1" xyz_pos="-2.67e-10 -0.4795 0.05855"/>
+    <xacro:propeller_geometry num="2" xyz_pos="-2.67e-10 0.4775 0.05855"/>
+    <xacro:propeller_geometry num="3" xyz_pos="0.4155 0.2404 0.05895"/>
+    <xacro:propeller_geometry num="4" xyz_pos="-0.4166 -0.2385 0.05895"/>
+    <xacro:propeller_geometry num="5" xyz_pos="0.4166 -0.2385 0.05855"/>
+    <xacro:propeller_geometry num="6" xyz_pos="-0.4155 0.2404 0.05855"/>
+
+    <!-- Visual e Collision dei 2 carrelli di atterraggio -->
+    <visual>
+      <origin xyz="0 -0.135 -0.0174" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://clik1_node_pkg/model/meshes/landing_gear_dx_1/lg_visual.obj" scale="0.01 0.01 0.01"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 -0.135 -0.0174" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://clik1_node_pkg/model/meshes/landing_gear_dx_1/lg_visual.obj" scale="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+
+    <visual>
+      <origin xyz="0 0.135 -0.0174" rpy="-3.14 0 0"/>
+      <geometry>
+        <mesh filename="package://clik1_node_pkg/model/meshes/landing_gear_sx_1/corpo1_visual.obj" scale="0.01 0.01 0.01"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0.135 -0.0174" rpy="-3.14 0 0"/>
+      <geometry>
+        <mesh filename="package://clik1_node_pkg/model/meshes/landing_gear_sx_1/corpo1_visual.obj" scale="0.01 0.01 0.01"/>
+      </geometry>
+    </collision>
+  </link>
+
+</robot>

@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>clik1_node_pkg</name>
+  <version>0.0.0</version>
+  <description>Velocity-level CLIK Controller for Aerial Manipulators</description>
+
+  <maintainer email="mattiapedrocco@libero.it">Mattia Pedrocco</maintainer>
+
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <build_depend>python3-dev</build_depend>
+
+  <depend>rclpy</depend>
+  <depend>rclcpp</depend>
+
+  <depend>control_msgs</depend>
+  <depend>hardware_interface</depend>
+  <depend>pinocchio</depend>
+  <depend>pluginlib</depend>
+  <depend>rcpputils</depend>
+  <depend>px4_msgs</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>interbotix_xs_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
+
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>ros2controlcli</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>gz_ros2_control</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>urdf</exec_depend>
+  <exec_depend>xacro</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>launch_testing_ros</test_depend>
+  <test_depend>liburdfdom-tools</test_depend>
+  <test_depend>xacro</test_depend>
+  <depend>ament_index_cpp</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
