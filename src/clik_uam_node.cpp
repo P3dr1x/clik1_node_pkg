@@ -68,7 +68,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // Inizializza il broadcaster 
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
-    // TRASFORMARE LA POSA NOTA RISPETTO ALLA TERNA BASE DEL BRACCIO IN UNA POSA ASSOLUTA
+    // CREAZIONE TOPIC E SOTTOSCRIZIONI
     if (use_gazebo_pose_) {
         RCLCPP_INFO(this->get_logger(), "Utilizzo della posa da Gazebo (/world/default/dynamic_pose/info).");
         gazebo_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseArray>(
@@ -80,9 +80,23 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
         vehicle_attitude_sub_ = this->create_subscription<px4_msgs::msg::VehicleAttitude>(
             "/fmu/out/vehicle_attitude", rclcpp::SensorDataQoS(), std::bind(&ClikUamNode::vehicle_attitude_callback, this, std::placeholders::_1));
     }
+        
+    joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+        "/joint_states", 10, std::bind(&ClikUamNode::joint_state_callback, this, std::placeholders::_1));
+
+    // Modifica: Cambiato il tipo di publisher e il topic
+    joint_command_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
+        "/arm_controller/commands", 10);
+    
+    // Publisher per la posa dell'end-effector nel frame 'world'
+    ee_world_pose_pub_ = this->create_publisher<geometry_msgs::msg::Pose>("/ee_world_pose", 10);
+
+    // Aggiungo un publisher per la posa desiderata globale dell'end-effector
+    desired_ee_global_pose_pub_ = this->create_publisher<geometry_msgs::msg::Pose>(
+        "/desired_ee_global_pose", rclcpp::QoS(10).transient_local());
 
     // RICHIESTA DELLA POSA DELL'END-EFFECTOR DESIDERATA ALL'UTENTE (posa rispetto alla base del braccio 'mobile_wx250s/base_link')
-    get_desired_pose_from_user();
+    get_and_transform_desired_pose();
 
     // Ridimensiona vettori e matrici
     q_.resize(model_.nq);
@@ -100,9 +114,9 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // Inizializzazione di K_matrix_ con il valore configurato
     K_matrix_ = Eigen::MatrixXd::Identity(6, 6) * k_err_x_;
 
-    // Timer per eseguire la trasformazione quando i dati sono disponibili
-    transform_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(100), std::bind(&ClikUamNode::transform_pose, this)); // 10 Hz
+    // // Timer per eseguire la trasformazione quando i dati sono disponibili
+    // transform_timer_ = this->create_wall_timer(
+    //     std::chrono::milliseconds(100), std::bind(&ClikUamNode::transform_pose, this)); // 10 Hz
 
     // CREAZIONE TOPIC E SOTTOSCRIZIONI
     joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
@@ -125,7 +139,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
 
 }
 
-void ClikUamNode::get_desired_pose_from_user()
+void ClikUamNode::get_and_transform_desired_pose()
 {
     geometry_msgs::msg::Pose desired_pose_local;
     std::string input;
@@ -198,6 +212,69 @@ void ClikUamNode::get_desired_pose_from_user()
     RCLCPP_INFO(this->get_logger(), "Posa desiderata (locale): x=%.2f, y=%.2f, z=%.2f, qx=%.2f, qy=%.2f, qz=%.2f, qw=%.2f",
                 desired_ee_pose_local_.position.x, desired_ee_pose_local_.position.y, desired_ee_pose_local_.position.z,
                 desired_ee_pose_local_.orientation.x, desired_ee_pose_local_.orientation.y, desired_ee_pose_local_.orientation.z, desired_ee_pose_local_.orientation.w);
+
+    // Attendi che i dati di posa del drone siano disponibili
+    rclcpp::Rate rate(10); // 10 Hz
+    while (rclcpp::ok() && (!has_vehicle_local_position_ || !has_vehicle_attitude_))
+    {
+        RCLCPP_WARN(this->get_logger(), "In attesa dei dati di posizione e assetto del veicolo...");
+        rclcpp::spin_some(this->get_node_base_interface());
+        rate.sleep();
+    }
+    
+    if (!has_vehicle_local_position_ || !has_vehicle_attitude_)
+    {
+        RCLCPP_ERROR(this->get_logger(), "Posizione o assetto del veicolo non disponibili. Impossibile calcolare la posa globale dell'EE.");
+        return;
+    }
+
+    // Aggiorna la cinematica di Pinocchio una volta per ottenere le trasformazioni iniziali
+    pinocchio::forwardKinematics(model_, data_, pinocchio::neutral(model_));
+    pinocchio::updateFramePlacements(model_, data_);
+
+    // Ottieni la trasformazione statica da base_link a mobile_wx250s/base_link dall'URDF
+    const pinocchio::FrameIndex frame_id = model_.getFrameId("mobile_wx250s/base_link");
+    const pinocchio::SE3& tf_base_to_arm_base = data_.oMf[frame_id];
+
+    // Crea la posa del drone (base_link) nel frame 'world'
+    geometry_msgs::msg::Pose drone_pose;
+    drone_pose.position.x = vehicle_local_position_.x;
+    drone_pose.position.y = vehicle_local_position_.y;
+    drone_pose.position.z = vehicle_local_position_.z;
+    drone_pose.orientation.x = vehicle_attitude_.q[1];
+    drone_pose.orientation.y = vehicle_attitude_.q[2];
+    drone_pose.orientation.z = vehicle_attitude_.q[3];
+    drone_pose.orientation.w = vehicle_attitude_.q[0];
+
+    // In Pinocchio, il quaternione è (x, y, z, w)
+    // In ROS, il quaternione è (x, y, z, w)
+    // In PX4, il quaternione è (w, x, y, z)
+    // La conversione gestisce già questo, ma è bene ricordarlo.
+
+    // Trasforma la posa desiderata da locale (rispetto a mobile_wx250s/base_link) a 'world'
+    tf2::Transform tf_drone_pose;
+    tf2::fromMsg(drone_pose, tf_drone_pose);
+
+    tf2::Transform tf_arm_base_to_local_pose;
+    tf2::fromMsg(desired_ee_pose_local_, tf_arm_base_to_local_pose);
+
+    tf2::Transform tf_base_to_arm_base_tf2;
+    tf_base_to_arm_base_tf2.setOrigin(tf2::Vector3(tf_base_to_arm_base.translation().x(), tf_base_to_arm_base.translation().y(), tf_base_to_arm_base.translation().z()));
+    // Estrai la rotazione come quaternion da Eigen::Matrix3d
+    Eigen::Quaterniond eigen_quat(tf_base_to_arm_base.rotation());
+    tf2::Quaternion tf2_quat(eigen_quat.x(), eigen_quat.y(), eigen_quat.z(), eigen_quat.w());
+    tf_base_to_arm_base_tf2.setRotation(tf2_quat);
+
+    tf2::Transform tf_world_to_desired_pose = tf_drone_pose * tf_base_to_arm_base_tf2 * tf_arm_base_to_local_pose;
+
+    tf2::toMsg(tf_world_to_desired_pose, desired_ee_pose_world_);
+
+    RCLCPP_INFO(this->get_logger(), "Posa desiderata (world): x=%.3f, y=%.3f, z=%.3f, qx=%.3f, qy=%.3f, qz=%.3f, qw=%.3f",
+                desired_ee_pose_world_.position.x, desired_ee_pose_world_.position.y, desired_ee_pose_world_.position.z,
+                desired_ee_pose_world_.orientation.x, desired_ee_pose_world_.orientation.y, desired_ee_pose_world_.orientation.z, desired_ee_pose_world_.orientation.w);
+
+    publish_desired_global_pose(desired_ee_pose_world_);
+    desired_ee_pose_world_ready_ = true;
 }
 
 void ClikUamNode::vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
@@ -255,70 +332,70 @@ void ClikUamNode::gazebo_pose_callback(const geometry_msgs::msg::PoseArray::Shar
     }
 }
 
-void ClikUamNode::transform_pose()
-{
-    if (!has_vehicle_local_position_ || !has_vehicle_attitude_) {
-        return;
-    }
+// void ClikUamNode::transform_pose()
+// {
+//     if (!has_vehicle_local_position_ || !has_vehicle_attitude_) {
+//         return;
+//     }
 
-    // Aggiorna la cinematica di Pinocchio una volta per ottenere le trasformazioni iniziali
-    pinocchio::forwardKinematics(model_, data_, pinocchio::neutral(model_));
-    pinocchio::updateFramePlacements(model_, data_);
+//     // Aggiorna la cinematica di Pinocchio una volta per ottenere le trasformazioni iniziali
+//     pinocchio::forwardKinematics(model_, data_, pinocchio::neutral(model_));
+//     pinocchio::updateFramePlacements(model_, data_);
 
-    // Ottieni la trasformazione statica da base_link a mobile_wx250s/base_link dall'URDF
-    const pinocchio::FrameIndex frame_id = model_.getFrameId("mobile_wx250s/base_link");
-    const pinocchio::SE3& tf_base_to_arm_base = data_.oMf[frame_id];
+//     // Ottieni la trasformazione statica da base_link a mobile_wx250s/base_link dall'URDF
+//     const pinocchio::FrameIndex frame_id = model_.getFrameId("mobile_wx250s/base_link");
+//     const pinocchio::SE3& tf_base_to_arm_base = data_.oMf[frame_id];
 
-    // Crea la posa del drone (base_link) nel frame 'world'
-    geometry_msgs::msg::Pose drone_pose;
-    drone_pose.position.x = vehicle_local_position_.x;
-    drone_pose.position.y = vehicle_local_position_.y;
-    drone_pose.position.z = vehicle_local_position_.z;
-    drone_pose.orientation.x = vehicle_attitude_.q[1];
-    drone_pose.orientation.y = vehicle_attitude_.q[2];
-    drone_pose.orientation.z = vehicle_attitude_.q[3];
-    drone_pose.orientation.w = vehicle_attitude_.q[0];
+//     // Crea la posa del drone (base_link) nel frame 'world'
+//     geometry_msgs::msg::Pose drone_pose;
+//     drone_pose.position.x = vehicle_local_position_.x;
+//     drone_pose.position.y = vehicle_local_position_.y;
+//     drone_pose.position.z = vehicle_local_position_.z;
+//     drone_pose.orientation.x = vehicle_attitude_.q[1];
+//     drone_pose.orientation.y = vehicle_attitude_.q[2];
+//     drone_pose.orientation.z = vehicle_attitude_.q[3];
+//     drone_pose.orientation.w = vehicle_attitude_.q[0];
 
-    // In Pinocchio, il quaternione è (x, y, z, w)
-    // In ROS, il quaternione è (x, y, z, w)
-    // In PX4, il quaternione è (w, x, y, z)
-    // La conversione gestisce già questo, ma è bene ricordarlo.
+//     // In Pinocchio, il quaternione è (x, y, z, w)
+//     // In ROS, il quaternione è (x, y, z, w)
+//     // In PX4, il quaternione è (w, x, y, z)
+//     // La conversione gestisce già questo, ma è bene ricordarlo.
 
-    // Trasforma la posa desiderata da locale (rispetto a mobile_wx250s/base_link) a 'world'
-    tf2::Transform tf_drone_pose;
-    tf2::fromMsg(drone_pose, tf_drone_pose);
+//     // Trasforma la posa desiderata da locale (rispetto a mobile_wx250s/base_link) a 'world'
+//     tf2::Transform tf_drone_pose;
+//     tf2::fromMsg(drone_pose, tf_drone_pose);
 
-    tf2::Transform tf_arm_base_to_local_pose;
-    tf2::fromMsg(desired_ee_pose_local_, tf_arm_base_to_local_pose);
+//     tf2::Transform tf_arm_base_to_local_pose;
+//     tf2::fromMsg(desired_ee_pose_local_, tf_arm_base_to_local_pose);
 
-    tf2::Transform tf_base_to_arm_base_tf2;
-    tf_base_to_arm_base_tf2.setOrigin(tf2::Vector3(tf_base_to_arm_base.translation().x(), tf_base_to_arm_base.translation().y(), tf_base_to_arm_base.translation().z()));
-    // Estrai la rotazione come quaternion da Eigen::Matrix3d
-    Eigen::Quaterniond eigen_quat(tf_base_to_arm_base.rotation());
-    tf2::Quaternion tf2_quat(eigen_quat.x(), eigen_quat.y(), eigen_quat.z(), eigen_quat.w());
-    tf_base_to_arm_base_tf2.setRotation(tf2_quat);
+//     tf2::Transform tf_base_to_arm_base_tf2;
+//     tf_base_to_arm_base_tf2.setOrigin(tf2::Vector3(tf_base_to_arm_base.translation().x(), tf_base_to_arm_base.translation().y(), tf_base_to_arm_base.translation().z()));
+//     // Estrai la rotazione come quaternion da Eigen::Matrix3d
+//     Eigen::Quaterniond eigen_quat(tf_base_to_arm_base.rotation());
+//     tf2::Quaternion tf2_quat(eigen_quat.x(), eigen_quat.y(), eigen_quat.z(), eigen_quat.w());
+//     tf_base_to_arm_base_tf2.setRotation(tf2_quat);
 
-    tf2::Transform tf_world_to_desired_pose = tf_drone_pose * tf_base_to_arm_base_tf2 * tf_arm_base_to_local_pose;
+//     tf2::Transform tf_world_to_desired_pose = tf_drone_pose * tf_base_to_arm_base_tf2 * tf_arm_base_to_local_pose;
 
-    tf2::toMsg(tf_world_to_desired_pose, desired_ee_pose_world_);
+//     tf2::toMsg(tf_world_to_desired_pose, desired_ee_pose_world_);
 
-    RCLCPP_INFO_ONCE(this->get_logger(), "Posa desiderata (world) calcolata.");
-    RCLCPP_INFO(this->get_logger(), "Posa desiderata (world): x=%.3f, y=%.3f, z=%.3f, qx=%.3f, qy=%.3f, qz=%.3f, qw=%.3f",
-        desired_ee_pose_world_.position.x,
-        desired_ee_pose_world_.position.y,
-        desired_ee_pose_world_.position.z,
-        desired_ee_pose_world_.orientation.x,
-        desired_ee_pose_world_.orientation.y,
-        desired_ee_pose_world_.orientation.z,
-        desired_ee_pose_world_.orientation.w);
+//     RCLCPP_INFO_ONCE(this->get_logger(), "Posa desiderata (world) calcolata.");
+//     RCLCPP_INFO(this->get_logger(), "Posa desiderata (world): x=%.3f, y=%.3f, z=%.3f, qx=%.3f, qy=%.3f, qz=%.3f, qw=%.3f",
+//         desired_ee_pose_world_.position.x,
+//         desired_ee_pose_world_.position.y,
+//         desired_ee_pose_world_.position.z,
+//         desired_ee_pose_world_.orientation.x,
+//         desired_ee_pose_world_.orientation.y,
+//         desired_ee_pose_world_.orientation.z,
+//         desired_ee_pose_world_.orientation.w);
 
-    // Pubblica la posa desiderata una sola volta
-    publish_desired_global_pose(desired_ee_pose_world_);
+//     // Pubblica la posa desiderata una sola volta
+//     publish_desired_global_pose(desired_ee_pose_world_);
 
-    // Disattiva il timer dopo la prima esecuzione
-    transform_timer_->cancel();
-    desired_ee_pose_world_ready_ = true;
-}
+//     // Disattiva il timer dopo la prima esecuzione
+//     transform_timer_->cancel();
+//     desired_ee_pose_world_ready_ = true;
+// }
 
 void ClikUamNode::joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
 {
@@ -328,8 +405,9 @@ void ClikUamNode::joint_state_callback(const sensor_msgs::msg::JointState::Share
 
 void ClikUamNode::update()
 {
-    if (!desired_ee_pose_world_ready_ || !has_current_joint_state_ || !has_vehicle_local_position_ || !has_vehicle_attitude_)
+    if (!desired_ee_pose_world_ready_ || !has_current_joint_state_ || current_joint_state_.name.empty() || !has_vehicle_local_position_ || !has_vehicle_attitude_)
     {
+        RCLCPP_DEBUG(this->get_logger(), "Dati non pronti per l'update.");
         return;
     }
 

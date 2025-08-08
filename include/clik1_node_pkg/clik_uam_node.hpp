@@ -23,11 +23,11 @@ public:
 
 private:
     // Metodi
-    void get_desired_pose_from_user();
+    void get_and_transform_desired_pose();
     void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
     void gazebo_pose_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
-    void transform_pose();
+    //void transform_pose();
     void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg);
     void update();
 
