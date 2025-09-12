@@ -19,6 +19,7 @@ def generate_launch_description():
     # Launch Arguments
     use_sim = LaunchConfiguration('use_sim', default='false')
     use_sim_time = LaunchConfiguration('use_sim_time', default=True)
+    real_system = LaunchConfiguration('real_system', default='false')
     px4_repo_path = LaunchConfiguration('px4_repo_path', default=os.path.expanduser('~/PX4-Autopilot'))
     robot_model = LaunchConfiguration('robot_model', default='mobile_wx250s')
     robot_name = LaunchConfiguration('robot_name', default='mobile_wx250s')
@@ -183,6 +184,15 @@ def generate_launch_description():
         parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
     )
 
+    real_drone_pose_pub = Node(
+        package='clik1_node_pkg',
+        executable='real_drone_pose_pub',
+        name='real_drone_pose_pub',
+        output='screen',
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
+        condition=IfCondition(real_system)
+    )
+
     return LaunchDescription([   # lista dei nodi da lanciare
         DeclareLaunchArgument('use_sim', default_value='true', choices=['true', 'false'], description='Se true, usa il driver simulato.'),
         DeclareLaunchArgument('use_sim_time', default_value='true', choices=['true', 'false'], description='Se true, usa il clock simulato.'),
@@ -198,6 +208,8 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_model', default_value='mobile_wx250s', description='Modello del robot.'),
         DeclareLaunchArgument('robot_name', default_value='mobile_wx250s', description='Nome del robot.'),
         DeclareLaunchArgument('xs_driver_logging_level', default_value='INFO', choices=['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'], description='Livello di log del driver XS.'),
+        DeclareLaunchArgument('real_system', default_value='false', choices=['true','false'], description='Se true avvia il nodo real_drone_pose_pub.'),
+        # Be sure that MicroXRCEAgent is exposing PX4 topic on ROS2
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false'], description='Lancia RViz se true.'),
         bridge,
         #xsarm_control_launch,
@@ -212,5 +224,6 @@ def generate_launch_description():
                 on_exit=[send_sleep_pose],
             )
         ),
-        world_to_base_link_broadcaster,
+    world_to_base_link_broadcaster,
+    real_drone_pose_pub,
     ])

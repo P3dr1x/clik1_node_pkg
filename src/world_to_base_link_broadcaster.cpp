@@ -1,5 +1,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/pose.hpp"
 #include "px4_msgs/msg/vehicle_local_position.hpp"
 #include "px4_msgs/msg/vehicle_attitude.hpp"
 #include "tf2_ros/transform_broadcaster.h"
@@ -19,13 +20,10 @@ public:
                 "/world/default/dynamic_pose/info", 10,
                 std::bind(&WorldToBaseLinkBroadcaster::gazebo_pose_callback, this, std::placeholders::_1));
         } else {
-            RCLCPP_INFO(this->get_logger(), "Utilizzo della posa da PX4 (/fmu/out/...).");
-            vehicle_local_position_sub_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-                "/fmu/out/vehicle_local_position", rclcpp::SensorDataQoS(),
-                std::bind(&WorldToBaseLinkBroadcaster::vehicle_local_position_callback, this, std::placeholders::_1));
-            vehicle_attitude_sub_ = this->create_subscription<px4_msgs::msg::VehicleAttitude>(
-                "/fmu/out/vehicle_attitude", rclcpp::SensorDataQoS(),
-                std::bind(&WorldToBaseLinkBroadcaster::vehicle_attitude_callback, this, std::placeholders::_1));
+            RCLCPP_INFO(this->get_logger(), "Utilizzo della posa da /real_t960a_pose.");
+            real_drone_pose_sub_ = this->create_subscription<geometry_msgs::msg::Pose>(
+                "/real_t960a_pose", 10,
+                std::bind(&WorldToBaseLinkBroadcaster::real_drone_pose_callback, this, std::placeholders::_1));
         }
 
         transform_timer_ = rclcpp::create_timer(
@@ -77,31 +75,20 @@ private:
         }
     }
 
-    void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
-        Eigen::Vector3d ned_pos(msg->x, msg->y, msg->z);
-        Eigen::Vector3d enu_pos(ned_pos.y(), ned_pos.x(), -ned_pos.z());
+    void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {}
+    void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg) {}
 
-        vehicle_local_position_.position.x = enu_pos.x();
-        vehicle_local_position_.position.y = enu_pos.y();
-        vehicle_local_position_.position.z = enu_pos.z();
-
+    void real_drone_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg) {
+        vehicle_local_position_.position = msg->position;
+        vehicle_attitude_.orientation = msg->orientation;
         has_vehicle_local_position_ = true;
-    }
-
-    void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg) {
-        Eigen::Quaterniond flu_quat(msg->q[0], msg->q[1], -msg->q[2], -msg->q[3]);
-
-        vehicle_attitude_.orientation.w = flu_quat.w();
-        vehicle_attitude_.orientation.x = flu_quat.x();
-        vehicle_attitude_.orientation.y = flu_quat.y();
-        vehicle_attitude_.orientation.z = flu_quat.z();
-
         has_vehicle_attitude_ = true;
     }
 
     rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr drone_pose_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleAttitude>::SharedPtr vehicle_attitude_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr real_drone_pose_sub_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::TimerBase::SharedPtr transform_timer_;
 

@@ -19,16 +19,10 @@ def generate_launch_description():
         description='Set to true to use pose from Gazebo, false to use PX4 topics.'
     )
 
-    # # Nodo clik_uam_node
-    # clik_uam_node = Node(
-    #     package='clik1_node_pkg',
-    #     executable='clik_uam_node',
-    #     name='clik_uam_node',
-    #     output='screen',
-    #     parameters=[{
-    #         'use_gazebo_pose': LaunchConfiguration('use_gazebo_pose')
-    #     }]
-    # )
+    real_system_arg = DeclareLaunchArgument(
+        'real_system', default_value='false',
+        description='Set true when running with real system PX4 to show drone marker.'
+    )
 
     # Nodo RViz2
     rviz_node = Node(
@@ -53,12 +47,14 @@ def generate_launch_description():
         package='clik1_node_pkg',
         executable='rviz_marker_node',
         name='rviz_marker_node',
-        output='screen'
+        output='screen',
+        parameters=[{'real_system': LaunchConfiguration('real_system')}]
     )
 
 
     return LaunchDescription([
         use_gazebo_pose_arg,
+        real_system_arg,
         #robot_state_publisher_node,
         rviz_node,
         rviz_marker_node,

@@ -3,7 +3,7 @@
 This is the code for a ROS2 controller node that computes the Closed-Loop Inverse Kinematics (CLIK) of the Unmanned Aerial Manipulator (UAM) of the Department of Industrial Engineering of University of Padova (UniPD). It works for ROS2 Humble (Ubuntu 22.04).
 
 The UAM is composed by:
-- A custom hexarotor platform assembled at DII with Tarot T960 frame. The UAV mounts a Pixhawk 6C autopilot with PX4 v1.15 installed.
+- A custom hexarotor platform assembled at DII with Tarot T960 frame. The UAV mounts a Pixhawk 6C autopilot with PX4 v1.15.2 installed.
 - A commercial robotic arm: the Trossen WidowX250S Mobile.
 
 <div align="center">
@@ -42,21 +42,33 @@ In the first terminal launch
 ```bash
 ros2 launch clik1_node_pkg clik_sitl.launch.py
 ```
+If you want to subscribe to the simulated signals coming from PX4 for getting drone pose use `ros2 launch clik1_node_pkg clik_sitl.launch.py real_system:=true`. Pose data are taken from the `/real_t960a_pose` topic.
+
+> [!NOTE] 
+> Be sure that PX4 topics are exposed to ROS2. If in SITL simulation run `sudo MicroXRCEAgent udp4 -p 8888` in another terminal.
 
 If you want also Rviz visualization in order to see the desired pose vs the actual one, in another terninal launch
 
 ```bash
 ros2 launch clik1_node_pkg clik_uam_visual.launch.py
 ```
+Also here you can use the `real_system:=true` option.
+
+In order to plan the cartesian trajectory, in another terminal run
+
+```bash 
+ros2 run clik_node_pkg planner 
+```
+Now the user will be asked to choose which action to perform with the end-effector (for now only positioning can be ordered but soon also trajectory tracking will be added).
+If Positioning is chosen, user will be asked to type the desired EE pose w.r.t. the current pose of the manipulator base. The user has to type 7 numbers (desired position + quaternion). 
+If no or invalid input is given by the user, the desired relative EE pose commanded will be `{0.45 0.0 0.36 0 0 0 1}`.
 
 For running the controller 
 
 ```bash
-ros2 run clik1_node_pkg clik_uam_node
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err_x_:=50.0
 ```
 
-Now the user will be asked to type the desired EE pose w.r.t. the current pose of the manipulator base. The user has to type 7 numbers (desired position + quaternion) 
-If no or invalid input is given by the user, the desired relative EE pose commanded will be `{0.45 0.0 0.36 0 0 0 1}`.
 
 > [!NOTE] 
 > By default the node runs with the parameter `use_gazebo_pose:=true`. This means that the node will try to subscribe to the `/world/default/dynamic_pose/info` topic bridged from Gazebo to ROS2 for getting the UAV pose. 
@@ -70,7 +82,9 @@ If no or invalid input is given by the user, the desired relative EE pose comman
 Parameter      |Default value |   Description    |
 |-------------------|---------------|------------|
 | `use_gazebo_pose` | `true` | The node will try to subscribe to the `/world/default/dynamic_pose/info` topic bridged from Gazebo to ROS2 for getting the UAV pose. 
-| `k_err_x_` | `10.0` | Is the gain value for the EE feedback 
+| `k_err_x_` | `50.0` | Is the gain value for the EE feedback 
+| `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic
+
 
 ## Mathematics
 
