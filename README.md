@@ -10,7 +10,7 @@ The UAM is composed by:
   <img src="media/UAM.gif" alt="UAM">
 </div>
 
-This code for now keeps the end-effector (EE) of the arm at the pose desired by the user. 
+This code for now allows to keep the end-effector at a certain pose and to track a circular trajectory.
 
 ## Prerequisites
 
@@ -59,9 +59,10 @@ In order to plan the cartesian trajectory, in another terminal run
 ```bash 
 ros2 run clik_node_pkg planner 
 ```
-Now the user will be asked to choose which action to perform with the end-effector (for now only positioning can be ordered but soon also trajectory tracking will be added).
-If Positioning is chosen, user will be asked to type the desired EE pose w.r.t. the current pose of the manipulator base. The user has to type 7 numbers (desired position + quaternion). 
+Now the user will be asked to choose which action to perform with the end-effector (for now only positioning and circu;ar trakjectory tracking can be ordered).
+1. If `Positioning` is chosen, user will be asked to type the desired EE pose w.r.t. the current pose of the manipulator base. The user has to type 7 numbers (desired position + quaternion). 
 If no or invalid input is given by the user, the desired relative EE pose commanded will be `{0.45 0.0 0.36 0 0 0 1}`.
+2. If `Circular trajectory (x-z plane)` the user will be asked to insert 3 parameters of the trajectory (starting point position, radius of the trajectory and time of completion).
 
 For running the controller 
 

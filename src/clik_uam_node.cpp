@@ -78,6 +78,11 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
         "/desired_ee_global_pose", rclcpp::QoS(10),  // QoS volatile: non riceve messaggi precedenti all'avvio
         std::bind(&ClikUamNode::desired_pose_callback, this, std::placeholders::_1));
 
+    // Subscription alla velocità desiderata EE (default: zero se non presente)
+    desired_ee_velocity_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
+        "/desired_ee_velocity", rclcpp::QoS(10),
+        std::bind(&ClikUamNode::desired_velocity_callback, this, std::placeholders::_1));
+
     // Allocazioni
     q_.resize(model_.nq);
     qd_.resize(model_.nv);
@@ -85,6 +90,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     J_.resize(6, model_.nv);
     Jgen_.resize(6, model_.nv - 6);
     error_pose_ee_.resize(6);
+    desired_ee_velocity_vec_.setZero(6);
     arm_joints_ = {"waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"};
 
     declare_parameter("k_err_x_", 50.0);
@@ -99,6 +105,11 @@ void ClikUamNode::desired_pose_callback(const geometry_msgs::msg::Pose::SharedPt
     desired_ee_pose_world_ = *msg;
     desired_ee_pose_world_ready_ = true;
     RCLCPP_INFO(this->get_logger(), "Nuova posa desiderata ricevuta: x=%.3f y=%.3f z=%.3f", msg->position.x, msg->position.y, msg->position.z);
+}
+
+void ClikUamNode::desired_velocity_callback(const geometry_msgs::msg::Twist::SharedPtr msg) {
+    desired_ee_velocity_world_ = *msg;
+    desired_ee_velocity_ready_ = true; // indica che siamo in una fase di tracking
 }
 
 void ClikUamNode::vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
@@ -268,9 +279,22 @@ void ClikUamNode::update()
     // Calcola l'errore 6D
     error_pose_ee_ = pinocchio::log6(desired_pose_se3 * current_pose_se3.inverse()).toVector();
 
-    // --- CALCOLO RIFERIMENTI DI POSIZIONE ---
-    Eigen::VectorXd desired_ee_velocity = K_matrix_ * error_pose_ee_;
-    Eigen::VectorXd desired_joint_velocities = Jgen_.completeOrthogonalDecomposition().pseudoInverse() * desired_ee_velocity;
+    // --- CALCOLO RIFERIMENTI DI VELOCITÀ ---
+    // desired_ee_velocity è presa dal topic /desired_ee_velocity; se non in tracking, resta nulla
+    if (desired_ee_velocity_ready_) {
+        desired_ee_velocity_vec_.resize(6);
+        desired_ee_velocity_vec_.setZero();
+        desired_ee_velocity_vec_(0) = desired_ee_velocity_world_.linear.x;
+        desired_ee_velocity_vec_(1) = desired_ee_velocity_world_.linear.y;
+        desired_ee_velocity_vec_(2) = desired_ee_velocity_world_.linear.z;
+        desired_ee_velocity_vec_(3) = desired_ee_velocity_world_.angular.x;
+        desired_ee_velocity_vec_(4) = desired_ee_velocity_world_.angular.y;
+        desired_ee_velocity_vec_(5) = desired_ee_velocity_world_.angular.z;
+    } else {
+        if (desired_ee_velocity_vec_.size() != 6) desired_ee_velocity_vec_.resize(6);
+        desired_ee_velocity_vec_.setZero();
+    }
+    Eigen::VectorXd desired_joint_velocities = Jgen_.completeOrthogonalDecomposition().pseudoInverse() * (desired_ee_velocity_vec_ + K_matrix_ * error_pose_ee_);
 
     // Integrazione per ottenere posizione
     double dt = 0.01; // 100Hz

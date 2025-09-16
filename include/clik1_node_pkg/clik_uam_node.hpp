@@ -9,6 +9,7 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/twist.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/transform_broadcaster.h"
@@ -30,11 +31,14 @@ private:
     void gazebo_pose_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
     void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg);
     void desired_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg);
+    void desired_velocity_callback(const geometry_msgs::msg::Twist::SharedPtr msg);
     void update();
 
     // Variabili membro
     geometry_msgs::msg::Pose desired_ee_pose_world_;
+    geometry_msgs::msg::Twist desired_ee_velocity_world_;
     bool desired_ee_pose_world_ready_ = false;
+    bool desired_ee_velocity_ready_ = false;
     bool waiting_log_printed_ = false;
 
     // Subscribers ai topics dove sono pubblicati i dati di posa del drone
@@ -49,6 +53,7 @@ private:
 
     rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr gazebo_pose_sub_;
     rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr desired_ee_global_pose_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr desired_ee_velocity_sub_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -66,6 +71,7 @@ private:
     Eigen::VectorXd qd_;
     Eigen::VectorXd error_pose_ee_;
     Eigen::MatrixXd K_matrix_;
+    Eigen::VectorXd desired_ee_velocity_vec_;
 
     rclcpp::TimerBase::SharedPtr control_timer_;
 

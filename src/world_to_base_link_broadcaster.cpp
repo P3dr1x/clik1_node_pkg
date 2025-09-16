@@ -11,19 +11,19 @@ public:
     WorldToBaseLinkBroadcaster() : Node("world_to_base_link_broadcaster") {
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
-        this->declare_parameter<bool>("use_gazebo_pose", true);
-        this->get_parameter("use_gazebo_pose", use_gazebo_pose_);
+        this->declare_parameter<bool>("real_system", false);
+        this->get_parameter("real_system", real_system_);
 
-        if (use_gazebo_pose_) {
+        if (real_system_) {
+            RCLCPP_INFO(this->get_logger(), "Utilizzo della posa reale da /real_t960a_pose.");
+            real_drone_pose_sub_ = this->create_subscription<geometry_msgs::msg::Pose>(
+                "/real_t960a_pose", 10,
+                std::bind(&WorldToBaseLinkBroadcaster::real_drone_pose_callback, this, std::placeholders::_1));
+        } else {
             RCLCPP_INFO(this->get_logger(), "Utilizzo della posa da Gazebo (/world/default/dynamic_pose/info)." );
             drone_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseArray>(
                 "/world/default/dynamic_pose/info", 10,
                 std::bind(&WorldToBaseLinkBroadcaster::gazebo_pose_callback, this, std::placeholders::_1));
-        } else {
-            RCLCPP_INFO(this->get_logger(), "Utilizzo della posa da /real_t960a_pose.");
-            real_drone_pose_sub_ = this->create_subscription<geometry_msgs::msg::Pose>(
-                "/real_t960a_pose", 10,
-                std::bind(&WorldToBaseLinkBroadcaster::real_drone_pose_callback, this, std::placeholders::_1));
         }
 
         transform_timer_ = rclcpp::create_timer(
@@ -75,8 +75,8 @@ private:
         }
     }
 
-    void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {}
-    void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg) {}
+    // void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {}
+    // void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg) {}
 
     void real_drone_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg) {
         vehicle_local_position_.position = msg->position;
@@ -92,7 +92,7 @@ private:
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::TimerBase::SharedPtr transform_timer_;
 
-    bool use_gazebo_pose_;
+    bool real_system_;
     bool has_vehicle_local_position_ = false;
     bool has_vehicle_attitude_ = false;
     geometry_msgs::msg::Pose vehicle_local_position_;

@@ -4,6 +4,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/twist.hpp"
 #include "px4_msgs/msg/vehicle_local_position.hpp"
 #include "px4_msgs/msg/vehicle_attitude.hpp"
 #include "tf2_ros/buffer.h"
@@ -26,6 +27,7 @@ public:
 
 private:
   void get_and_transform_desired_pose(); // Copiata identica da clik_uam_node.cpp
+  void run_circular_trajectory();
   void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
   void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
   void real_drone_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg);
@@ -39,6 +41,7 @@ private:
   geometry_msgs::msg::Pose last_published_pose_;
 
   rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr desired_ee_global_pose_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr desired_ee_velocity_pub_;
 
   // Subscribers pose drone
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;

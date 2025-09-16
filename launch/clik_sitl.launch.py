@@ -181,7 +181,10 @@ def generate_launch_description():
         executable='world_to_base_link_broadcaster',
         name='world_to_base_link_broadcaster',
         output='screen',
-        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
+        parameters=[
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+            {'real_system': real_system}
+        ]
     )
 
     real_drone_pose_pub = Node(
@@ -208,7 +211,7 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_model', default_value='mobile_wx250s', description='Modello del robot.'),
         DeclareLaunchArgument('robot_name', default_value='mobile_wx250s', description='Nome del robot.'),
         DeclareLaunchArgument('xs_driver_logging_level', default_value='INFO', choices=['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'], description='Livello di log del driver XS.'),
-        DeclareLaunchArgument('real_system', default_value='false', choices=['true','false'], description='Se true avvia il nodo real_drone_pose_pub.'),
+    DeclareLaunchArgument('real_system', default_value='true', choices=['true','false'], description='Se true avvia il nodo real_drone_pose_pub e il broadcaster usa la posa reale.'),
         # Be sure that MicroXRCEAgent is exposing PX4 topic on ROS2
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false'], description='Lancia RViz se true.'),
         bridge,

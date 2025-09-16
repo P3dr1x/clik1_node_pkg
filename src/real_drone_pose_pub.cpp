@@ -64,25 +64,25 @@ private:
     const double x_n = vehicle_local_position_.x;
     const double y_e = vehicle_local_position_.y;
     const double z_d = vehicle_local_position_.z;
-  const double cos_y0 = std::cos(yaw_offset_);
-  const double sin_y0 = std::sin(yaw_offset_);
-  // Rotazione SOLO della posizione in base allo yaw iniziale per definire frame fisso
-  double x_world =  cos_y0 * x_n + sin_y0 * y_e;      // forward rispetto heading iniziale
-  double y_world =  sin_y0 * x_n - cos_y0 * y_e;      // left rispetto heading iniziale
+    const double cos_y0 = std::cos(yaw_offset_);
+    const double sin_y0 = std::sin(yaw_offset_);
+    // Rotazione SOLO della posizione in base allo yaw iniziale per definire frame fisso
+    double x_world =  cos_y0 * x_n + sin_y0 * y_e;      // forward rispetto heading iniziale
+    double y_world =  sin_y0 * x_n - cos_y0 * y_e;      // left rispetto heading iniziale
     double z_world = -z_d;
 
-  // Offset: il punto originario (P) pubblicato da PX4 è 0.061 m sotto l'origine di base_link lungo +Z corpo (FLU).
-  // Quindi base_link = P + R_world_body * (0,0,0.061).
-  Eigen::Vector3d offset_body(0.0, 0.0, base_link_offset_z_);
-  Eigen::Vector3d offset_world = q_world * offset_body; // q_world ruota vettori dal body al world
-  double x_base = x_world + offset_world.x();
-  double y_base = y_world + offset_world.y();
-  double z_base = z_world + offset_world.z();
+    // Offset: il punto originario (P) pubblicato da PX4 è 0.061 m sotto l'origine di base_link lungo +Z corpo (FLU).
+    // Quindi base_link = P + R_world_body * (0,0,0.061).
+    Eigen::Vector3d offset_body(0.0, 0.0, base_link_offset_z_);
+    Eigen::Vector3d offset_world = q_world * offset_body; // q_world ruota vettori dal body al world
+    double x_base = x_world + offset_world.x();
+    double y_base = y_world + offset_world.y();
+    double z_base = z_world + offset_world.z();
 
-  geometry_msgs::msg::Pose pose;
-  pose.position.x = x_base;
-  pose.position.y = y_base;
-  pose.position.z = z_base;
+    geometry_msgs::msg::Pose pose;
+    pose.position.x = x_base;
+    pose.position.y = y_base;
+    pose.position.z = z_base;
     pose.orientation.w = q_world.w();
     pose.orientation.x = q_world.x();
     pose.orientation.y = q_world.y();
