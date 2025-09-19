@@ -13,11 +13,11 @@ def generate_launch_description():
     rviz_config_file = os.path.join(pkg_share, 'rviz', 'clik_uam.rviz')
 
     # Argomento per decidere se usare la posa da Gazebo
-    use_gazebo_pose_arg = DeclareLaunchArgument(
-        'use_gazebo_pose',
-        default_value='true',
-        description='Set to true to use pose from Gazebo, false to use PX4 topics.'
-    )
+    # use_gazebo_pose_arg = DeclareLaunchArgument(
+    #     'use_gazebo_pose',
+    #     default_value='true',
+    #     description='Set to true to use pose from Gazebo, false to use PX4 topics.'
+    # )
 
     real_system_arg = DeclareLaunchArgument(
         'real_system', default_value='false',
@@ -53,7 +53,7 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        use_gazebo_pose_arg,
+        #use_gazebo_pose_arg,
         real_system_arg,
         #robot_state_publisher_node,
         rviz_node,

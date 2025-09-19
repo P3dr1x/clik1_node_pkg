@@ -25,6 +25,12 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     this->declare_parameter<bool>("use_gazebo_pose", true);
     this->get_parameter("use_gazebo_pose", use_gazebo_pose_);
 
+    // Parametri per instradare i topic e la modalità reale/simulata
+    this->declare_parameter<std::string>("robot_name", "mobile_wx250s");
+    this->declare_parameter<bool>("real_system", false);
+    robot_name_ = this->get_parameter("robot_name").as_string();
+    real_system_ = this->get_parameter("real_system").as_bool();
+
     // Carica il modello URDF
     // NOTA: il percorso del file URDF potrebbe dover essere reso un parametro
     const auto pkg_share = ament_index_cpp::get_package_share_directory("clik1_node_pkg");
@@ -62,13 +68,28 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
             "/real_t960a_pose", 10, std::bind(&ClikUamNode::real_drone_pose_callback, this, std::placeholders::_1));
     }
 
-    // Joint states
-    joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-        "/joint_states", 10, std::bind(&ClikUamNode::joint_state_callback, this, std::placeholders::_1));
+    // Joint states: se reale, leggi da /<robot_name>/joint_states (xs_sdk); se SITL, da /joint_states (ros2_control)
+    {
+        std::string joint_states_topic;
+        // if (real_system_) {
+        //     joint_states_topic = "/" + robot_name_ + "/joint_states";
+        // } else {
+        joint_states_topic = "/joint_states";
+        // }
+        joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+            joint_states_topic, 10, std::bind(&ClikUamNode::joint_state_callback, this, std::placeholders::_1));
+        RCLCPP_INFO(this->get_logger(), "Mi sottoscrivo a %s", joint_states_topic.c_str());
+    }
 
-    // Command publisher
-    joint_command_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
-        "/arm_controller/commands", 10);
+    // Publisher comandi: se reale, JointGroupCommand su /<robot_name>/commands/joint_group; se SITL, Float64MultiArray su /arm_controller/commands
+    if (real_system_) {
+        const std::string cmd_topic = "/commands/joint_group";
+        joint_group_pub_ = this->create_publisher<interbotix_xs_msgs::msg::JointGroupCommand>(cmd_topic, 10);
+        RCLCPP_INFO(this->get_logger(), "real_system=true -> pubblicherò su %s (JointGroupCommand)", cmd_topic.c_str());
+    } else {
+        arm_controller_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("/arm_controller/commands", 10);
+        RCLCPP_INFO(this->get_logger(), "real_system=false -> pubblicherò su /arm_controller/commands (Float64MultiArray)");
+    }
 
     // Pose corrente EE (rispetto al frame world)
     ee_world_pose_pub_ = this->create_publisher<geometry_msgs::msg::Pose>("/ee_world_pose", 10);
@@ -313,7 +334,17 @@ void ClikUamNode::update()
     }
 
     // Pubblicazione del messaggio
-    joint_command_pub_->publish(command_msg);
+    if (real_system_) {
+        interbotix_xs_msgs::msg::JointGroupCommand jgc;
+        jgc.name = "arm";  // deve corrispondere al gruppo definito nel YAML (groups.arm)
+        jgc.cmd.resize(command_msg.data.size());
+        for (size_t i = 0; i < command_msg.data.size(); ++i) {
+            jgc.cmd[i] = static_cast<float>(command_msg.data[i]);
+        }
+        if (joint_group_pub_) joint_group_pub_->publish(jgc);
+    } else {
+        if (arm_controller_pub_) arm_controller_pub_->publish(command_msg);
+    }
 }
 
 int main(int argc, char *argv[])

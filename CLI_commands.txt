@@ -1,0 +1,3 @@
+COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE
+
+ros2 topic pub --once /arm_controller/commands std_msgs/msg/Float64MultiArray '{data: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0]}'

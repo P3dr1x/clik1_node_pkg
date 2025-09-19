@@ -10,6 +10,7 @@
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "interbotix_xs_msgs/msg/joint_group_command.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "tf2_ros/transform_broadcaster.h"
@@ -76,7 +77,10 @@ private:
     rclcpp::TimerBase::SharedPtr control_timer_;
 
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
-    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr joint_command_pub_;
+    // Publisher per Interbotix xs_sdk/xs_sdk_sim
+    rclcpp::Publisher<interbotix_xs_msgs::msg::JointGroupCommand>::SharedPtr joint_group_pub_;
+    // Publisher per ros2_control (SITL)
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr arm_controller_pub_;
     rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr ee_world_pose_pub_;
 
     sensor_msgs::msg::JointState current_joint_state_;
@@ -85,6 +89,10 @@ private:
     double k_err_x_; // Guadagno proporzionale configurabile
 
     std::vector<std::string> arm_joints_;
+
+    // Parametri runtime
+    std::string robot_name_;
+    bool real_system_ = true;
 };
 
 #endif // CLIK_UAM_NODE_HPP_

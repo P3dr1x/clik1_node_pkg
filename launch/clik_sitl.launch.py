@@ -1,7 +1,7 @@
 import os  # Importa il modulo os per manipolare i percorsi di file
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, TimerAction, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, TimerAction
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, PathJoinSubstitution, LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
@@ -17,7 +17,7 @@ import pathlib
 def generate_launch_description(): 
 
     # Launch Arguments
-    use_sim = LaunchConfiguration('use_sim', default='false')
+    use_sim = LaunchConfiguration('use_sim', default='true')
     use_sim_time = LaunchConfiguration('use_sim_time', default=True)
     real_system = LaunchConfiguration('real_system', default='false')
     px4_repo_path = LaunchConfiguration('px4_repo_path', default=os.path.expanduser('~/PX4-Autopilot'))
@@ -73,17 +73,12 @@ def generate_launch_description():
         os.path.join(pkg_share, 'model', 't960a.urdf.xacro')
     ])
 
-    # Carica il file URDF contenente solo l'arm
-    arm_urdf_path = pathlib.Path(pkg_share, 'model', 'wx250s_sim.urdf')
-    arm_description = arm_urdf_path.read_text()
-
-    robot_controllers = PathJoinSubstitution(
-        [
-            FindPackageShare('clik1_node_pkg'),
-            'config',
-            'mobile_wx250s_joint_pos_ctrl.yaml',
-        ]
-    )
+    # File controller ros2_control (SITL)
+    robot_controllers = PathJoinSubstitution([
+        FindPackageShare('clik1_node_pkg'),
+        'config',
+        'mobile_wx250s_joint_pos_ctrl.yaml',
+    ])
 
     robot_state_publisher = Node(
         package="robot_state_publisher",
@@ -91,43 +86,30 @@ def generate_launch_description():
         name="robot_state_publisher",
         output="screen",
         parameters=[{'robot_description': ParameterValue(full_robot_description, value_type=str),
-                     'use_sim_time': True}],
+                     'use_sim_time': use_sim_time}],
     )
-
-    # Adesso startiamo i 3 controller del configuration file (arm, gripper controller e joint state broadcaster) tramite un nodo
-    joint_state_broadcaster_spawner = Node(  # questo è un nuovo nodo
-        package = "controller_manager",
-        executable="spawner",  # Nome dell'eseguibile del nodo
-        # namespace='/mobile_wx250s',  # Namespace del nodo
+    # Spawner ros2_control: joint_state_broadcaster e arm_controller
+    joint_state_broadcaster_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
         arguments=[
             'joint_state_broadcaster',
             '--param-file',
             robot_controllers,
         ],
+        output='screen',
     )
 
-    arm_controller_spawner = Node(  # questo è un nuovo nodo
-        package = "controller_manager",
-        executable="spawner",
-        # namespace='/mobile_wx250s', 
+    arm_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
         arguments=[
             'arm_controller',
             '--param-file',
             robot_controllers,
         ],
+        output='screen',
     )
-
-
-    # gripper_controller_spawner = Node(  # questo è un nuovo nodo
-    #     package = "controller_manager",
-    #     executable="spawner",
-    #     # namespace='/mobile_wx250s', 
-    #     arguments=[
-    #         '-c',
-    #         'controller_manager',
-    #         'gripper_controller',
-    #     ],
-    # )
 
 
     # Bridge
@@ -143,37 +125,15 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Action call to send the arm to sleep pose
-    send_sleep_pose = Node(
-        package='clik1_node_pkg',
-        executable='send_sleep_pose.py',  # Assicurati che sia installato correttamente
-        name='send_sleep_pose',
+    # Pubblica la configurazione di sleep via CLI (una volta sola)
+    sleep_pose_pub = ExecuteProcess(
+        cmd=[
+            'ros2', 'topic', 'pub', '--once',
+            '/arm_controller/commands',
+            'std_msgs/msg/Float64MultiArray',
+            '{data: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0]}'
+        ],
         output='screen'
-    )
-
-
-    # Includi xsarm_control.launch.py
-    xsarm_control_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare('interbotix_xsarm_control'),
-                'launch',
-                'xsarm_control.launch.py',
-            ])
-        ]),
-        launch_arguments={
-            'robot_model': robot_model,
-            'robot_name': robot_name,
-            'use_rviz': use_rviz,
-            'motor_configs': motor_configs,
-            'mode_configs': mode_configs,
-            'load_configs': load_configs,
-            #'robot_description': arm_description,
-            'use_sim': use_sim,
-            'use_sim_time': use_sim_time,
-            'xs_driver_logging_level': xs_driver_logging_level,
-            'use_robot_state_publisher': 'false',
-        }.items(),
     )
 
     world_to_base_link_broadcaster = Node(
@@ -196,6 +156,19 @@ def generate_launch_description():
         condition=IfCondition(real_system)
     )
 
+    # Nodo CLIK in SITL: usa posa da Gazebo e pubblica comandi verso ros2_control
+    clik_uam_node = Node(
+        package='clik1_node_pkg',
+        executable='clik_uam_node',
+        name='clik_uam_node',
+        output='screen',
+        parameters=[
+            {'robot_name': robot_name},
+            {'real_system': False},  # False: pubblica su /arm_controller/commands
+            {'use_gazebo_pose': True},
+        ],
+    )
+
     return LaunchDescription([   # lista dei nodi da lanciare
         DeclareLaunchArgument('use_sim', default_value='true', choices=['true', 'false'], description='Se true, usa il driver simulato.'),
         DeclareLaunchArgument('use_sim_time', default_value='true', choices=['true', 'false'], description='Se true, usa il clock simulato.'),
@@ -211,22 +184,24 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_model', default_value='mobile_wx250s', description='Modello del robot.'),
         DeclareLaunchArgument('robot_name', default_value='mobile_wx250s', description='Nome del robot.'),
         DeclareLaunchArgument('xs_driver_logging_level', default_value='INFO', choices=['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'], description='Livello di log del driver XS.'),
-    DeclareLaunchArgument('real_system', default_value='false', choices=['true','false'], description='Se true avvia il nodo real_drone_pose_pub e il broadcaster usa la posa reale.'),
+        DeclareLaunchArgument('real_system', default_value='false', choices=['true','false'], description='Se true avvia il nodo real_drone_pose_pub e il broadcaster usa la posa reale.'),
         # Be sure that MicroXRCEAgent is exposing PX4 topic on ROS2
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false'], description='Lancia RViz se true.'),
-        bridge,
-        #xsarm_control_launch,
-        robot_state_publisher,
-        joint_state_broadcaster_spawner,
-        arm_controller_spawner,
-        #gripper_controller_spawner,
-        px4_sitl,
-        RegisterEventHandler(
-            event_handler=OnProcessExit(
-                target_action=arm_controller_spawner,
-                on_exit=[send_sleep_pose],
-            )
-        ),
+    px4_sitl,
+    bridge,
+    robot_state_publisher,
+    joint_state_broadcaster_spawner,
+    arm_controller_spawner,
     world_to_base_link_broadcaster,
     real_drone_pose_pub,
+    # Dopo lo spawn di arm_controller, invia la sleep pose e avvia clik_uam_node dopo 5s
+    RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=arm_controller_spawner,
+            on_exit=[
+                sleep_pose_pub,
+                #TimerAction(period=10.0, actions=[clik_uam_node])
+            ],
+        )
+    ),
     ])
