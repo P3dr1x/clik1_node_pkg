@@ -35,7 +35,7 @@ colcon build --packages-select clik1_node_pkg --symlink-install
 ```
 Do not worry if some warnings on Pinocchio arise after the build. 
 
-## Usage Guide
+## Usage with PX4 SITL simualtion
 
 In the first terminal launch
 
@@ -87,6 +87,43 @@ Parameter      |Default value |   Description    |
 | `k_err_x_` | `50.0` | Is the gain value for the EE feedback 
 | `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic
 
+
+## Usage with real system
+
+0. Power on the onboard computer. Make sure that the USB cable connecting it to the USB-to-serial dongle is not connected at the startup. Connect it later.
+
+1. Connect to the onboard computer with GCS. If GCS is connected to the same `unipd_DII_RAL` portable network type:
+
+```bash
+sudo ssh interbotix@192.168.1.125
+```
+
+2. For having MAVLINK telemetry on the GCS type:
+```bash
+sudo systemctl start mavlink-router
+```
+3. Make sure that the arm is connected through USB to the onboard computer.
+4. Make sure that PX4 topics are exposed to ROS2. In order to di so
+```bash
+MicroXRCEAgent serial --dev /tty/USB1 -b 921600 
+```
+5. Launch 
+```bash
+ros2 launch clik1_node_pkg clik_real.launch.py
+```
+
+This should also open a Rviz session where it is possible to visualize the configuration of the UAM in real-time.
+
+6. Run the controller
+```bash
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p real_system:=true
+```
+7. Run the planner
+```bash
+ros2 run clik1_node_pkg planner
+```
+
+7. Stay safe and enjoy ;)
 
 ## Mathematics
 
