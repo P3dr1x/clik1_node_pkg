@@ -35,7 +35,7 @@ colcon build --packages-select clik1_node_pkg --symlink-install
 ```
 Do not worry if some warnings on Pinocchio arise after the build. 
 
-## Usage with PX4 SITL simualtion
+## Usage with PX4 SITL simulation
 
 In the first terminal launch
 
