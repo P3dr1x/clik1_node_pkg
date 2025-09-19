@@ -88,7 +88,7 @@ Parameter      |Default value |   Description    |
 | `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic
 
 
-## Usage with real system
+## Usage with real system (Motion Capture)
 
 0. Power on the onboard computer. Make sure that the USB cable connecting it to the USB-to-serial dongle is not connected at the startup. Connect it later.
 
@@ -97,16 +97,20 @@ Parameter      |Default value |   Description    |
 ```bash
 sudo ssh interbotix@192.168.1.125
 ```
+2. Make sure that the Windows machine is streaming and that both the `t960a` and the `end_effector` bodies are visible in the scene. On the onboard computer type
 
-2. For having MAVLINK telemetry on the GCS type:
+```bash
+cd mocap_px4_bridge_ws
+. install/setup.bash
+ros2 launch natnet_ros2 natnet_ros2.launch.py conf_file:=drone_plus_arm.yaml
+```
+
+3. For having MAVLINK telemetry on the GCS type:
 ```bash
 sudo systemctl start mavlink-router
 ```
-3. Make sure that the arm is connected through USB to the onboard computer.
-4. Make sure that PX4 topics are exposed to ROS2. In order to di so
-```bash
-MicroXRCEAgent serial --dev /tty/USB1 -b 921600 
-```
+4. Make sure that the arm is connected through USB to the onboard computer.
+
 5. Launch 
 ```bash
 ros2 launch clik1_node_pkg clik_real.launch.py
@@ -123,7 +127,7 @@ ros2 run clik1_node_pkg clik_uam_node --ros-args -p real_system:=true
 ros2 run clik1_node_pkg planner
 ```
 
-7. Stay safe and enjoy ;)
+8. Stay safe and enjoy ;)
 
 ## Mathematics
 

@@ -16,6 +16,7 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 
 ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()), tf_listener_(tf_buffer_)
@@ -63,9 +64,9 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
         gazebo_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseArray>(
             "/world/default/dynamic_pose/info", 10, std::bind(&ClikUamNode::gazebo_pose_callback, this, std::placeholders::_1));
     } else {
-        RCLCPP_INFO(this->get_logger(), "Utilizzo della posa dal nodo real_drone_pose_pub (/real_t960a_pose).");
-        real_drone_pose_sub_ = this->create_subscription<geometry_msgs::msg::Pose>(
-            "/real_t960a_pose", 10, std::bind(&ClikUamNode::real_drone_pose_callback, this, std::placeholders::_1));
+        RCLCPP_INFO(this->get_logger(), "Utilizzo della posa dal Motion Capture (/t960a/pose - PoseStamped da natnet_ros2).");
+        real_drone_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/t960a/pose", 10, std::bind(&ClikUamNode::real_drone_pose_callback, this, std::placeholders::_1));
     }
 
     // Joint states: se reale, leggi da /<robot_name>/joint_states (xs_sdk); se SITL, da /joint_states (ros2_control)
@@ -168,17 +169,19 @@ void ClikUamNode::vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude
     has_vehicle_attitude_ = true;
 }
 
-void ClikUamNode::real_drone_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg)
+void ClikUamNode::real_drone_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
-    // Assumiamo che /real_t960a_pose sia già in frame world FLU con yaw eliminato (o come concordato)
-    vehicle_local_position_.x = msg->position.x;
-    vehicle_local_position_.y = msg->position.y;
-    vehicle_local_position_.z = msg->position.z;
+    // Assumiamo che /t960a/pose sia in frame world FLU (come configurato in natnet_ros2)
+    const auto& p = msg->pose.position;
+    const auto& o = msg->pose.orientation;
+    vehicle_local_position_.x = p.x;
+    vehicle_local_position_.y = p.y;
+    vehicle_local_position_.z = p.z;
 
-    vehicle_attitude_.q[0] = msg->orientation.w;
-    vehicle_attitude_.q[1] = msg->orientation.x;
-    vehicle_attitude_.q[2] = msg->orientation.y;
-    vehicle_attitude_.q[3] = msg->orientation.z;
+    vehicle_attitude_.q[0] = o.w;
+    vehicle_attitude_.q[1] = o.x;
+    vehicle_attitude_.q[2] = o.y;
+    vehicle_attitude_.q[3] = o.z;
     has_vehicle_local_position_ = true;
     has_vehicle_attitude_ = true;
 }

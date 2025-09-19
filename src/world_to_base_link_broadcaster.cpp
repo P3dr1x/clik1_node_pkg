@@ -1,6 +1,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
 #include "geometry_msgs/msg/pose.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "px4_msgs/msg/vehicle_local_position.hpp"
 #include "px4_msgs/msg/vehicle_attitude.hpp"
 #include "tf2_ros/transform_broadcaster.h"
@@ -15,9 +16,9 @@ public:
         this->get_parameter("real_system", real_system_);
 
         if (real_system_) {
-            RCLCPP_INFO(this->get_logger(), "Utilizzo della posa reale da /real_t960a_pose.");
-            real_drone_pose_sub_ = this->create_subscription<geometry_msgs::msg::Pose>(
-                "/real_t960a_pose", 10,
+            RCLCPP_INFO(this->get_logger(), "Utilizzo della posa reale da Motion Capture (/t960a/pose - PoseStamped).");
+            real_drone_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+                "/t960a/pose", 10,
                 std::bind(&WorldToBaseLinkBroadcaster::real_drone_pose_callback, this, std::placeholders::_1));
         } else {
             RCLCPP_INFO(this->get_logger(), "Utilizzo della posa da Gazebo (/world/default/dynamic_pose/info)." );
@@ -78,9 +79,9 @@ private:
     // void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {}
     // void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg) {}
 
-    void real_drone_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg) {
-        vehicle_local_position_.position = msg->position;
-        vehicle_attitude_.orientation = msg->orientation;
+    void real_drone_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+        vehicle_local_position_.position = msg->pose.position;
+        vehicle_attitude_.orientation = msg->pose.orientation;
         has_vehicle_local_position_ = true;
         has_vehicle_attitude_ = true;
     }
@@ -88,7 +89,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr drone_pose_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleAttitude>::SharedPtr vehicle_attitude_sub_;
-    rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr real_drone_pose_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr real_drone_pose_sub_;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::TimerBase::SharedPtr transform_timer_;
 

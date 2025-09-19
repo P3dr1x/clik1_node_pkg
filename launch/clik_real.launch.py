@@ -156,7 +156,7 @@ def generate_launch_description():
         # Be sure that MicroXRCEAgent is exposing PX4 topic on ROS2
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false'], description='Lancia RViz se true.'),
     #microxrce_agent,
-    real_drone_pose_pub,
+    #real_drone_pose_pub,
     world_to_base_link_broadcaster,
     xs_sdk_node,
     robot_state_publisher,

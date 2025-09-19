@@ -1,3 +1,13 @@
-COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE
+--------- COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE ---------------
 
 ros2 topic pub --once /arm_controller/commands std_msgs/msg/Float64MultiArray '{data: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0]}'
+
+--------- SETTARE I PROFILI DI VELOCITÀ DEI MOTORI ---------------------
+
+ros2 service call /mobile_wx250s/set_operating_modes interbotix_xs_msgs/srv/OperatingModes "{cmd_type: 'group', name: 'arm', mode: 'position', profile_type: 'time', profile_velocity: 2000, profile_acceleration: 300}"
+
+--------- REGISTRAZIONE ROS2 BAG ----------------------------------------
+
+cd ~/ros2_bag
+
+ros2 bag record -o clik_test /t960a/pose /joint_states /commands/joint_group /desired_ee_global_pose /ee_world_pose /desired_ee_velocity

@@ -4,6 +4,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "px4_msgs/msg/vehicle_local_position.hpp"
 #include "px4_msgs/msg/vehicle_attitude.hpp"
@@ -31,7 +32,7 @@ private:
   void run_polyline_trajectory();
   void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
   void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
-  void real_drone_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg);
+  void real_drone_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void gazebo_pose_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
   void publish_desired_global_pose(const geometry_msgs::msg::Pose& pose);
 
@@ -48,7 +49,7 @@ private:
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
   rclcpp::Subscription<px4_msgs::msg::VehicleAttitude>::SharedPtr vehicle_attitude_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr gazebo_pose_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr real_drone_pose_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr real_drone_pose_sub_;
   px4_msgs::msg::VehicleLocalPosition vehicle_local_position_;
   px4_msgs::msg::VehicleAttitude vehicle_attitude_;
   bool has_vehicle_local_position_ = false;

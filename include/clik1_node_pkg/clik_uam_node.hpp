@@ -9,6 +9,7 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "interbotix_xs_msgs/msg/joint_group_command.hpp"
 #include "tf2_ros/buffer.h"
@@ -28,7 +29,7 @@ private:
     // get_and_transform_desired_pose rimosso: ora la posa desiderata arriva dal planner esterno
     void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
-    void real_drone_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg);
+    void real_drone_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
     void gazebo_pose_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
     void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg);
     void desired_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg);
@@ -45,7 +46,7 @@ private:
     // Subscribers ai topics dove sono pubblicati i dati di posa del drone
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleAttitude>::SharedPtr vehicle_attitude_sub_;
-    rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr real_drone_pose_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr real_drone_pose_sub_;
     px4_msgs::msg::VehicleLocalPosition vehicle_local_position_;
     px4_msgs::msg::VehicleAttitude vehicle_attitude_;
     bool has_vehicle_local_position_ = false;
