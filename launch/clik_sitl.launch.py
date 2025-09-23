@@ -50,10 +50,13 @@ def generate_launch_description():
     )
 
     # Set environment variable for Gazebo 
-    os.environ['GZ_SIM_SYSTEM_PLUGIN_PATH'] = os.path.join(
-        os.environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH', ''),
-        '/home/mattia/gz_ros2_control_ws/install/gz_ros2_control/lib'
-    )
+    # Costruisci un percorso portabile espandendo "~" e usa os.pathsep per concatenare più directory
+    _gz_plugin_dir = os.path.expanduser('~/gz_ros2_control_ws/install/gz_ros2_control/lib')
+    _existing_gz_plugin_path = os.environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH')
+    if _existing_gz_plugin_path:
+        os.environ['GZ_SIM_SYSTEM_PLUGIN_PATH'] = _existing_gz_plugin_path + os.pathsep + _gz_plugin_dir
+    else:
+        os.environ['GZ_SIM_SYSTEM_PLUGIN_PATH'] = _gz_plugin_dir
 
     # Set environment variable for Gazebo (corretto)
     # set_gz_plugin_path = SetEnvironmentVariable(
