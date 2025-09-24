@@ -18,6 +18,8 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "pinocchio/multibody/model.hpp"
 #include "pinocchio/multibody/data.hpp"
+#include "pinocchio/fwd.hpp"
+#include <array>
 
 class ClikUamNode : public rclcpp::Node
 {

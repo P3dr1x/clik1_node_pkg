@@ -13,6 +13,7 @@
 #include "tf2_ros/transform_broadcaster.h"
 #include "pinocchio/multibody/model.hpp"
 #include "pinocchio/multibody/data.hpp"
+#include "pinocchio/fwd.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "px4_ros_com/frame_transforms.h"
