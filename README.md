@@ -76,7 +76,7 @@ ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err_x_:=50.0
 > By default the node runs with the parameter `use_gazebo_pose:=true`. This means that the node will try to subscribe to the `/world/default/dynamic_pose/info` topic bridged from Gazebo to ROS2 for getting the UAV pose. 
 
 <div align="center">
-  <img src="media/GIF_Rviz.gif" alt="UAM">
+  <img src="media/cerchio_uam.gif" alt="UAM">
 </div>
 
 ## Node parameters
