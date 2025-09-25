@@ -1,6 +1,20 @@
---------- COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE ---------------
+--------- COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE (SIMULAZIONE)---------------
 
 ros2 topic pub --once /arm_controller/commands std_msgs/msg/Float64MultiArray '{data: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0]}'
+
+--------- COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE (REALTÅ)---------------
+
+ros2 topic pub --once /commands/joint_trajectory trajectory_msgs/msg/JointTrajectory "{
+  joint_names: ['waist','shoulder','elbow','forearm_roll','wrist_angle','wrist_rotate'],
+  points: [
+    {
+      positions: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0],
+      velocities: [0, 0, 0, 0, 0, 0],
+      time_from_start: {sec: 2, nanosec: 0}
+    }
+  ]
+}"
+
 
 --------- SETTARE I PROFILI DI VELOCITÀ DEI MOTORI ---------------------
 
