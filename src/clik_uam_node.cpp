@@ -18,6 +18,9 @@
 #include "geometry_msgs/msg/pose_array.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "tf2_ros/transform_broadcaster.h"
+#include <Eigen/SVD>
+#include <Eigen/Dense>
+
 
 ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()), tf_listener_(tf_buffer_)
 {
@@ -118,6 +121,36 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     declare_parameter("k_err_x_", 50.0);
     k_err_x_ = get_parameter("k_err_x_").as_double();
     K_matrix_ = Eigen::MatrixXd::Identity(6, 6) * k_err_x_;
+
+    // LC solution parameters: weights and previous joint velocities (consider only 6 arm joints, ignore gripper)
+    const std::size_t n_arm = arm_joints_.size(); // 6
+    W_diag_.resize(n_arm);
+    W_diag_.setOnes();
+    qd_prev_arm_.resize(n_arm);
+    qd_prev_arm_.setZero();
+
+    // Allow overriding W via parameter (vector<double> of size n_arm)
+    std::vector<double> W_default(n_arm, 1.0);
+    // come in MATLAB: peso maggiore sulla seconda giunta ("shoulder")
+    for (std::size_t i = 0; i < arm_joints_.size() && i < n_arm; ++i) {
+        if (arm_joints_[i] == std::string("shoulder")) {
+            W_default[i] = 15.0;
+            break;
+        }
+    }
+    this->declare_parameter<std::vector<double>>("W_diag", W_default);
+    const auto W_param = this->get_parameter("W_diag").as_double_array();
+    if (W_param.size() == n_arm) {
+        for (std::size_t i = 0; i < n_arm; ++i) W_diag_[static_cast<Eigen::Index>(i)] = W_param[i];
+    } else {
+        RCLCPP_WARN(this->get_logger(), "Parametro W_diag dimensione %zu diversa da n_arm=%zu. Uso default.", W_param.size(), n_arm);
+        for (std::size_t i = 0; i < arm_joints_.size() && i < n_arm; ++i) {
+            if (arm_joints_[i] == std::string("shoulder")) {
+                W_diag_[static_cast<Eigen::Index>(i)] = 15.0;
+                break;
+            }
+        }
+    }
 
     // Timer controllo
     control_timer_ = this->create_wall_timer(std::chrono::milliseconds(10), std::bind(&ClikUamNode::update, this));  // 100 Hz
@@ -260,12 +293,21 @@ void ClikUamNode::update()
     data_.M.triangularView<Eigen::StrictlyLower>() = data_.M.transpose().triangularView<Eigen::StrictlyLower>();
     inertia_matrix_ = data_.M;
 
-    pinocchio::computeFrameJacobian(model_, data_, q_, ee_frame_id_, pinocchio::ReferenceFrame::WORLD, J_);
-
     // cinematica diretta per posa assoluta dell'end-effector
     pinocchio::forwardKinematics(model_, data_, q_);
     pinocchio::updateFramePlacements(model_, data_);
     const pinocchio::SE3& ee_placement = data_.oMf[ee_frame_id_];
+
+    // Jacobiano del frame in LOCAL
+    Eigen::MatrixXd J_local(6, model_.nv);
+    pinocchio::computeFrameJacobian(model_, data_, q_, ee_frame_id_, pinocchio::ReferenceFrame::LOCAL, J_local);
+    // Inverti le prime 3 e le ultime 3 righe di J_local prima della trasformazione
+    Eigen::MatrixXd J_local_swapped(6, model_.nv);
+    J_local_swapped.topRows(3) = J_local.bottomRows(3);   // lineare al top
+    J_local_swapped.bottomRows(3) = J_local.topRows(3);   // angolare al bottom
+    // Trasforma in WORLD: J_world = Ad_{oMf} * J_local_swapped
+    J_ = ee_placement.toActionMatrix() * J_local_swapped;
+
     // conversione a geometry_msgs::Pose
     geometry_msgs::msg::Pose current_ee_pose_world;
     current_ee_pose_world.position.x = ee_placement.translation().x();
@@ -287,7 +329,9 @@ void ClikUamNode::update()
     Eigen::MatrixXd J_m = J_.rightCols(model_.nv - 6);
 
     // --- CALCOLO JACOBIANO GENERALIZZATO ---
-    Jgen_ = J_m - J_b * H_b.inverse() * H_bm;
+    // Usa solve al posto di inverse per stabilità numerica
+    Eigen::MatrixXd Hb_inv_Hbm = H_b.ldlt().solve(H_bm); // risolve H_b * X = H_bm
+    Jgen_ = J_m - J_b * Hb_inv_Hbm;
 
     // --- CALCOLO ERRORE DI POSA ---
     // Converti pose in SE3 di Pinocchio
@@ -300,25 +344,56 @@ void ClikUamNode::update()
         Eigen::Vector3d(current_ee_pose_world.position.x, current_ee_pose_world.position.y, current_ee_pose_world.position.z)
     );
 
-    // Calcola l'errore 6D
-    error_pose_ee_ = pinocchio::log6(desired_pose_se3 * current_pose_se3.inverse()).toVector();
-
-    // --- CALCOLO RIFERIMENTI DI VELOCITÀ ---
-    // desired_ee_velocity è presa dal topic /desired_ee_velocity; se non in tracking, resta nulla
+    // --- CONTROLLO CLIK: SOLO 3 DOF TRASLAZIONALI ---
+    // Estrai la parte lineare dello Jacobiano generalizzato (righe 3:5, ordine [omega; v])
+    // Usa solo i 6 giunti dell'arm: ultime 3 righe (lineare) e prime 6 colonne
+    const int n_arm_cols = static_cast<int>(arm_joints_.size());
+    const Eigen::MatrixXd Jgen_lin = Jgen_.bottomRows(3).leftCols(n_arm_cols); // 3 x 6
+    // v_task: velocità lineare desiderata dell'EE in world + termine proporzionale sull'errore di posizione (in WORLD)
+    Eigen::Vector3d v_task = Eigen::Vector3d::Zero();
     if (desired_ee_velocity_ready_) {
-        desired_ee_velocity_vec_.resize(6);
-        desired_ee_velocity_vec_.setZero();
-        desired_ee_velocity_vec_(0) = desired_ee_velocity_world_.linear.x;
-        desired_ee_velocity_vec_(1) = desired_ee_velocity_world_.linear.y;
-        desired_ee_velocity_vec_(2) = desired_ee_velocity_world_.linear.z;
-        desired_ee_velocity_vec_(3) = desired_ee_velocity_world_.angular.x;
-        desired_ee_velocity_vec_(4) = desired_ee_velocity_world_.angular.y;
-        desired_ee_velocity_vec_(5) = desired_ee_velocity_world_.angular.z;
-    } else {
-        if (desired_ee_velocity_vec_.size() != 6) desired_ee_velocity_vec_.resize(6);
-        desired_ee_velocity_vec_.setZero();
+        v_task.x() = desired_ee_velocity_world_.linear.x;
+        v_task.y() = desired_ee_velocity_world_.linear.y;
+        v_task.z() = desired_ee_velocity_world_.linear.z;
     }
-    Eigen::VectorXd desired_joint_velocities = Jgen_.completeOrthogonalDecomposition().pseudoInverse() * (desired_ee_velocity_vec_ + K_matrix_ * error_pose_ee_);
+    // Errore di posizione in WORLD: e_lin_world = p_des - p_cur
+    const Eigen::Vector3d e_lin_world(
+        desired_ee_pose_world_.position.x - current_ee_pose_world.position.x,
+        desired_ee_pose_world_.position.y - current_ee_pose_world.position.y,
+        desired_ee_pose_world_.position.z - current_ee_pose_world.position.z
+    );
+    v_task += k_err_x_ * e_lin_world;
+
+    {
+        std::ostringstream oss_v, oss_eW;
+        oss_v << v_task.transpose();
+        oss_eW << e_lin_world.transpose();
+        RCLCPP_INFO(this->get_logger(), "e_lin_world (3) = [%s]", oss_eW.str().c_str());
+        RCLCPP_INFO(this->get_logger(), "v_task (3) = [%s]", oss_v.str().c_str());
+    }
+
+    // Soluzione LC (Lagrange-Constraint) pesata come in MATLAB:
+    //   A = J * W^{-1} * J^T
+    //   B = W^{-1} * J^T
+    //   pinv_weighted = B * (A \ I)
+    //   qd = pinv_weighted * Vgen + (I - pinv_weighted * J) * qd_ob
+    const auto n_arm = static_cast<int>(arm_joints_.size());
+    //Eigen::VectorXd qd_ob = qd_prev_arm_;
+    Eigen::VectorXd qd_ob;
+    qd_ob.setZero(n_arm);
+    if (qd_ob.size() != n_arm) {
+        qd_ob = Eigen::VectorXd::Zero(n_arm);
+    }
+    //const Eigen::Vector3d Vgen = v_task;
+    const Eigen::VectorXd Winv_diag = W_diag_.cwiseInverse();
+    const Eigen::Matrix3d A = (Jgen_lin * Winv_diag.asDiagonal() * Jgen_lin.transpose()).eval();
+    const Eigen::MatrixXd B = Winv_diag.asDiagonal() * Jgen_lin.transpose(); // n x 3
+    // Solve A \ I
+    Eigen::Matrix3d A_inv_like = A.ldlt().solve(Eigen::Matrix3d::Identity());
+    const Eigen::MatrixXd pinv_weighted = B * A_inv_like; // n x 3
+    // qd
+    const Eigen::MatrixXd I_n = Eigen::MatrixXd::Identity(n_arm, n_arm);
+    Eigen::VectorXd desired_joint_velocities = pinv_weighted * v_task + (I_n - pinv_weighted * Jgen_lin) * qd_ob;
 
     // Integrazione per ottenere posizione
     double dt = 0.01; // 100Hz
@@ -348,6 +423,9 @@ void ClikUamNode::update()
     } else {
         if (arm_controller_pub_) arm_controller_pub_->publish(command_msg);
     }
+
+    // Aggiorna memoria per soluzione LC al prossimo timestep
+    qd_prev_arm_ = desired_joint_velocities;
 }
 
 int main(int argc, char *argv[])

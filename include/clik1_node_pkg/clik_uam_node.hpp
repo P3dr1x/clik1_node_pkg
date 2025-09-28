@@ -19,6 +19,7 @@
 #include "pinocchio/multibody/model.hpp"
 #include "pinocchio/multibody/data.hpp"
 #include "pinocchio/fwd.hpp"
+#include <Eigen/Dense>
 #include <array>
 
 class ClikUamNode : public rclcpp::Node
@@ -76,6 +77,9 @@ private:
     Eigen::VectorXd error_pose_ee_;
     Eigen::MatrixXd K_matrix_;
     Eigen::VectorXd desired_ee_velocity_vec_;
+    // LC solution state: weights and previous joint velocities (arm-only)
+    Eigen::VectorXd W_diag_;         // diagonal weights for joints (size = n_arm)
+    Eigen::VectorXd qd_prev_arm_;    // previous commanded joint velocities (size = n_arm)
 
     rclcpp::TimerBase::SharedPtr control_timer_;
 

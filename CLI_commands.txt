@@ -4,15 +4,41 @@ ros2 topic pub --once /arm_controller/commands std_msgs/msg/Float64MultiArray '{
 
 --------- COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE (REALTÅ)---------------
 
-ros2 topic pub --once /commands/joint_trajectory trajectory_msgs/msg/JointTrajectory "{
-  joint_names: ['waist','shoulder','elbow','forearm_roll','wrist_angle','wrist_rotate'],
-  points: [
-    {
-      positions: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0],
-      velocities: [0, 0, 0, 0, 0, 0],
-      time_from_start: {sec: 2, nanosec: 0}
-    }
-  ]
+ros2 topic pub --once /commands/joint_trajectory interbotix_xs_msgs/msg/JointTrajectoryCommand "{
+  cmd_type: 'group',
+  name: 'arm',
+  traj: {
+    header: {stamp: {sec: 0, nanosec: 0}, frame_id: ''},
+    joint_names: ['waist','shoulder','elbow','forearm_roll','wrist_angle','wrist_rotate'],
+    points: [
+      { positions: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0], time_from_start: {sec: 5, nanosec: 0}},
+      { positions: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0], time_from_start: {sec: 5, nanosec: 0}}
+    ]
+  }
+}"
+
+
+---- oppure ------
+
+ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCommand "{
+  name: 'arm',
+  cmd: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0]
+}"
+
+
+--------- COMANDARE IL BRACCIO AD ANDARE IN HOME POSE (REALTÅ)---------------
+
+ros2 topic pub --once /commands/joint_trajectory interbotix_xs_msgs/msg/JointTrajectoryCommand "{
+  cmd_type: 'group',
+  name: 'arm',
+  traj: {
+    header: {stamp: {sec: 0, nanosec: 0}, frame_id: ''},
+    joint_names: ['waist','shoulder','elbow','forearm_roll','wrist_angle','wrist_rotate'],
+    points: [
+      { positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], time_from_start: {sec: 5, nanosec: 0}},
+      { positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], time_from_start: {sec: 5, nanosec: 0}}
+    ]
+  }
 }"
 
 
