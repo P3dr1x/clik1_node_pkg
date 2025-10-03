@@ -41,6 +41,13 @@ ros2 topic pub --once /commands/joint_trajectory interbotix_xs_msgs/msg/JointTra
   }
 }"
 
+---- oppure ------
+
+ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCommand "{
+  name: 'arm',
+  cmd: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+}"
+
 
 --------- SETTARE I PROFILI DI VELOCITÀ DEI MOTORI ---------------------
 

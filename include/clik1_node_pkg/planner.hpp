@@ -6,6 +6,7 @@
 #include "geometry_msgs/msg/pose_array.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 #include "px4_msgs/msg/vehicle_local_position.hpp"
 #include "px4_msgs/msg/vehicle_attitude.hpp"
 #include "tf2_ros/buffer.h"
@@ -36,6 +37,7 @@ private:
   void real_drone_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void gazebo_pose_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
   void publish_desired_global_pose(const geometry_msgs::msg::Pose& pose);
+  void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg);
 
   // Variabili membro necessarie (stesse della funzione copiata)
   geometry_msgs::msg::Pose desired_ee_pose_local_;
@@ -45,6 +47,9 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::Pose>::SharedPtr desired_ee_global_pose_pub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr desired_ee_velocity_pub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  sensor_msgs::msg::JointState current_joint_state_;
+  bool has_joint_state_ = false;
 
   // Subscribers pose drone
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;

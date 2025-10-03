@@ -364,13 +364,13 @@ void ClikUamNode::update()
     );
     v_task += k_err_x_ * e_lin_world;
 
-    {
-        std::ostringstream oss_v, oss_eW;
-        oss_v << v_task.transpose();
-        oss_eW << e_lin_world.transpose();
-        RCLCPP_INFO(this->get_logger(), "e_lin_world (3) = [%s]", oss_eW.str().c_str());
-        RCLCPP_INFO(this->get_logger(), "v_task (3) = [%s]", oss_v.str().c_str());
-    }
+    // {
+    //     std::ostringstream oss_v, oss_eW;
+    //     oss_v << v_task.transpose();
+    //     oss_eW << e_lin_world.transpose();
+    //     RCLCPP_INFO(this->get_logger(), "e_lin_world (3) = [%s]", oss_eW.str().c_str());
+    //     RCLCPP_INFO(this->get_logger(), "v_task (3) = [%s]", oss_v.str().c_str());
+    // }
 
     // Soluzione LC (Lagrange-Constraint) pesata come in MATLAB:
     //   A = J * W^{-1} * J^T
