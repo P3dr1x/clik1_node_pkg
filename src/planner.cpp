@@ -460,32 +460,50 @@ void PlannerNode::joint_state_callback(const sensor_msgs::msg::JointState::Share
 
 void PlannerNode::run_polyline_trajectory() {
   // 1) Acquisizione waypoints locali rispetto a mobile_wx250s/base_link
-  std::cout << "Inserisci sequenza di waypoints. Ogni riga: \n"
+  std::cout << "POLYLINE: inserisci i waypoints. Ogni riga: \n"
                " - 3 numeri: x y z (posizione)\n"
                " - 7 numeri: x y z qx qy qz qw (posa)\n"
-               "Termina con una riga vuota (solo INVIO).\n";
+               "Primo punto: premi INVIO per usare la POLYLINE DI DEFAULT (rettangolo) con start dall'EE corrente.\n"
+               "Termina l'inserimento con una riga vuota.\n";
 
   struct WP { Eigen::Vector3d p; bool has_q; Eigen::Quaterniond q; };
   std::vector<WP> wps_local;
-  while (rclcpp::ok()) {
-    std::cout << "> ";
-    std::string line; if (!std::getline(std::cin, line)) break;
-    if (line.empty()) break;
-    std::stringstream ss(line);
+  bool use_default_polyline = false;
+
+  // Primo input
+  std::cout << "Primo waypoint (o INVIO per default):\n> ";
+  std::string first_line;
+  if (!std::getline(std::cin, first_line)) return;
+  if (first_line.empty()) {
+    use_default_polyline = true;
+  } else {
+    std::stringstream ss(first_line);
     std::vector<double> vals; double x; while (ss >> x) vals.push_back(x);
     if (vals.size() == 3) {
       wps_local.push_back({Eigen::Vector3d(vals[0], vals[1], vals[2]), false, Eigen::Quaterniond(1,0,0,0)});
     } else if (vals.size() == 7) {
-      Eigen::Quaterniond q(vals[6], vals[3], vals[4], vals[5]);
-      q.normalize();
+      Eigen::Quaterniond q(vals[6], vals[3], vals[4], vals[5]); q.normalize();
       wps_local.push_back({Eigen::Vector3d(vals[0], vals[1], vals[2]), true, q});
     } else {
       std::cout << "Input non valido. Inserire 3 o 7 valori." << std::endl;
     }
-  }
-  if (wps_local.size() < 2) {
-    RCLCPP_WARN(this->get_logger(), "Servono almeno 2 waypoints per una polyline.");
-    return;
+
+    // Eventuali altri waypoint manuali finché non si inserisce riga vuota
+    while (rclcpp::ok()) {
+      std::cout << "> ";
+      std::string line; if (!std::getline(std::cin, line)) break;
+      if (line.empty()) break;
+      std::stringstream ss2(line);
+      std::vector<double> vals2; double x2; while (ss2 >> x2) vals2.push_back(x2);
+      if (vals2.size() == 3) {
+        wps_local.push_back({Eigen::Vector3d(vals2[0], vals2[1], vals2[2]), false, Eigen::Quaterniond(1,0,0,0)});
+      } else if (vals2.size() == 7) {
+        Eigen::Quaterniond q2(vals2[6], vals2[3], vals2[4], vals2[5]); q2.normalize();
+        wps_local.push_back({Eigen::Vector3d(vals2[0], vals2[1], vals2[2]), true, q2});
+      } else {
+        std::cout << "Input non valido. Inserire 3 o 7 valori." << std::endl;
+      }
+    }
   }
 
   // 2) Tempo massimo per ciascun tratto
@@ -526,6 +544,61 @@ void PlannerNode::run_polyline_trajectory() {
   tf2::Transform tf_drone_pose; tf2::fromMsg(drone_pose, tf_drone_pose);
   tf2::Transform tf_world_from_arm_base0 = tf_drone_pose * tf_base_to_arm_base; // frozen
 
+  // 4bis) Se richiesto default: costruisci la polyline di default con start = EE corrente via FK
+  Eigen::Quaterniond q_world_ee_current(1,0,0,0);
+  bool have_q_world_ee_current = false;
+  if (use_default_polyline) {
+    // Attendi (breve) joint states; se non arrivano, usa configurazione neutra per FK
+    rclcpp::Rate r(50);
+    for (int i = 0; i < 50 && rclcpp::ok() && !has_joint_state_; ++i) {
+      rclcpp::spin_some(this->get_node_base_interface());
+      r.sleep();
+    }
+
+    Eigen::VectorXd q = pinocchio::neutral(model_);
+    // Base dalla posa del drone
+    q[0] = vehicle_local_position_.x;
+    q[1] = vehicle_local_position_.y;
+    q[2] = vehicle_local_position_.z;
+    q[3] = vehicle_attitude_.q[1];
+    q[4] = vehicle_attitude_.q[2];
+    q[5] = vehicle_attitude_.q[3];
+    q[6] = vehicle_attitude_.q[0];
+    if (has_joint_state_) {
+      for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+        const auto& jname = current_joint_state_.name[i];
+        if (!model_.existJointName(jname)) continue;
+        pinocchio::JointIndex jid = model_.getJointId(jname);
+        int idx_q = static_cast<int>(model_.joints[jid].idx_q());
+        if (idx_q >= 7 && idx_q < q.size()) q[idx_q] = current_joint_state_.position[i];
+      }
+    }
+    pinocchio::forwardKinematics(model_, data_, q);
+    pinocchio::updateFramePlacements(model_, data_);
+  const pinocchio::SE3& T_world_ee_now = data_.oMf[ee_frame_id_];
+  q_world_ee_current = Eigen::Quaterniond(T_world_ee_now.rotation());
+  q_world_ee_current.normalize();
+  have_q_world_ee_current = true;
+    tf2::Vector3 p_world(T_world_ee_now.translation().x(), T_world_ee_now.translation().y(), T_world_ee_now.translation().z());
+    tf2::Vector3 p_local_tf = tf_world_from_arm_base0.inverse() * p_world;
+    Eigen::Vector3d p0_local(p_local_tf.x(), p_local_tf.y(), p_local_tf.z());
+
+    // Costruisci la polyline di default: primo punto = p0_local, poi rettangolo x-z locale
+    wps_local.clear();
+    wps_local.push_back({p0_local, false, Eigen::Quaterniond(1,0,0,0)});
+    wps_local.push_back({Eigen::Vector3d(0.45, 0.0, 0.38), false, Eigen::Quaterniond(1,0,0,0)});
+    wps_local.push_back({Eigen::Vector3d(0.45, 0.0, 0.2), false, Eigen::Quaterniond(1,0,0,0)});
+    wps_local.push_back({Eigen::Vector3d(0.25, 0.0, 0.2), false, Eigen::Quaterniond(1,0,0,0)});
+    wps_local.push_back({Eigen::Vector3d(0.25, 0.0, 0.38), false, Eigen::Quaterniond(1,0,0,0)});
+    wps_local.push_back({Eigen::Vector3d(0.45, 0.0, 0.38), false, Eigen::Quaterniond(1,0,0,0)});
+  }
+
+  // Verifica numero minimo di waypoints
+  if (wps_local.size() < 2) {
+    RCLCPP_WARN(this->get_logger(), "Servono almeno 2 waypoints per una polyline.");
+    return;
+  }
+
   // 5) Pubblica il primo waypoint come posa iniziale e vel zero
   auto to_world_pose = [&](const WP& wp)->geometry_msgs::msg::Pose{
     // locale -> world usando frozen transform
@@ -546,8 +619,13 @@ void PlannerNode::run_polyline_trajectory() {
   // Orientazione di riferimento: se il primo WP ha quaternione usalo, altrimenti prendi quella world del primo setpoint
   Eigen::Quaterniond q_world_ref(1,0,0,0);
   geometry_msgs::msg::Pose first_pose_world = to_world_pose(wps_local.front());
-  if (wps_local.front().has_q) {
-    q_world_ref = Eigen::Quaterniond(first_pose_world.orientation.w, first_pose_world.orientation.x, first_pose_world.orientation.y, first_pose_world.orientation.z);
+  // Se abbiamo calcolato l'orientazione world corrente dell'EE (default), usala come riferimento costante
+  if (have_q_world_ee_current) {
+    first_pose_world.orientation.x = q_world_ee_current.x();
+    first_pose_world.orientation.y = q_world_ee_current.y();
+    first_pose_world.orientation.z = q_world_ee_current.z();
+    first_pose_world.orientation.w = q_world_ee_current.w();
+    q_world_ref = q_world_ee_current;
   } else {
     q_world_ref = Eigen::Quaterniond(first_pose_world.orientation.w, first_pose_world.orientation.x, first_pose_world.orientation.y, first_pose_world.orientation.z);
   }
