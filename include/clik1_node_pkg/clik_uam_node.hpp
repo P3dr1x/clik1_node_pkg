@@ -70,16 +70,14 @@ private:
     pinocchio::Data::Matrix6x J_;
     pinocchio::FrameIndex ee_frame_id_;
 
-    Eigen::MatrixXd Jgen_;
-    Eigen::MatrixXd inertia_matrix_;
+    // Jacobiano tradizionale (solo braccio) – niente Jacobiano generalizzato in questa branch
     Eigen::VectorXd q_;
     Eigen::VectorXd qd_;
-    Eigen::VectorXd error_pose_ee_;
-    Eigen::MatrixXd K_matrix_;
-    Eigen::VectorXd desired_ee_velocity_vec_;
-    // LC solution state: weights and previous joint velocities (arm-only)
-    Eigen::VectorXd W_diag_;         // diagonal weights for joints (size = n_arm)
-    Eigen::VectorXd qd_prev_arm_;    // previous commanded joint velocities (size = n_arm)
+    // Guadagno controllo posizione (solo traslazionale) e damping per pseudoinversa
+    double k_err_x_;
+    double damping_;
+    // Pesi per pseudoinversa pesata (norma W) – spalla con peso maggiore
+    Eigen::VectorXd W_diag_;
 
     rclcpp::TimerBase::SharedPtr control_timer_;
 
@@ -92,8 +90,6 @@ private:
 
     sensor_msgs::msg::JointState current_joint_state_;
     bool has_current_joint_state_ = false;
-
-    double k_err_x_; // Guadagno proporzionale configurabile
 
     std::vector<std::string> arm_joints_;
 
