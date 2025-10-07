@@ -1,6 +1,9 @@
---------- COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE (SIMULAZIONE)---------------
+--------- COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP/HOME POSE (SIMULAZIONE)---------------
 
 ros2 topic pub --once /arm_controller/commands std_msgs/msg/Float64MultiArray '{data: [0.0, -1.8, 1.55, 0.0, 0.8, 0.0]}'
+
+ros2 topic pub --once /arm_controller/commands std_msgs/msg/Float64MultiArray '{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}'
+
 
 --------- COMANDARE IL BRACCIO AD ANDARE ALLA SLEEP POSE (REALTÅ)---------------
 
