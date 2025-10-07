@@ -160,5 +160,5 @@ def generate_launch_description():
     world_to_base_link_broadcaster,
     xs_sdk_node,
     robot_state_publisher,
-    delayed_visual
+    # delayed_visual
     ])
