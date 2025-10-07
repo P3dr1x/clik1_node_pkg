@@ -10,6 +10,8 @@
 #include "pinocchio/algorithm/frames.hpp"
 #include "pinocchio/algorithm/kinematics.hpp"
 #include "pinocchio/algorithm/crba.hpp" // Composite Rigid Body Algorithm (per inerzia)
+#include "pinocchio/algorithm/center-of-mass.hpp"
+#include "pinocchio/algorithm/centroidal.hpp"
 #include "trajectory_msgs/msg/joint_trajectory_point.hpp"
 #include "interbotix_xs_msgs/msg/joint_group_command.hpp" // Include necessario per il nuovo tipo di messaggio
 #include "px4_ros_com/frame_transforms.h"
@@ -122,6 +124,10 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     k_err_x_ = get_parameter("k_err_x_").as_double();
     K_matrix_ = Eigen::MatrixXd::Identity(6, 6) * k_err_x_;
 
+    // Parametro per abilitare/disabilitare la compensazione del termine di momento totale
+    this->declare_parameter<bool>("use_momentum_comp", false);
+    use_momentum_comp_ = this->get_parameter("use_momentum_comp").as_bool();
+
     // LC solution parameters: weights and previous joint velocities (consider only 6 arm joints, ignore gripper)
     const std::size_t n_arm = arm_joints_.size(); // 6
     W_diag_.resize(n_arm);
@@ -159,12 +165,14 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
 void ClikUamNode::desired_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg) {
     desired_ee_pose_world_ = *msg;
     desired_ee_pose_world_ready_ = true;
-    RCLCPP_INFO(this->get_logger(), "Nuova posa desiderata ricevuta: x=%.3f y=%.3f z=%.3f", msg->position.x, msg->position.y, msg->position.z);
+    //RCLCPP_INFO(this->get_logger(), "Nuova posa desiderata ricevuta: x=%.3f y=%.3f z=%.3f", msg->position.x, msg->position.y, msg->position.z);
 }
 
 void ClikUamNode::desired_velocity_callback(const geometry_msgs::msg::Twist::SharedPtr msg) {
     desired_ee_velocity_world_ = *msg;
     desired_ee_velocity_ready_ = true; // indica che siamo in una fase di tracking
+    RCLCPP_INFO(this->get_logger(), "Nuova velocità desiderata ricevuta: x=%.3f y=%.3f z=%.3f", msg->linear.x, msg->linear.y, msg->linear.z);
+
 }
 
 void ClikUamNode::vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
@@ -285,8 +293,22 @@ void ClikUamNode::update()
     }
     pinocchio::normalize(model_, q_);
 
-    // 3. Velocità (per ora a zero)
+    // 3. Velocità generalizzate: assumiamo base ferma (hovering) -> prime 6 componenti zero
     qd_.setZero();
+    if (current_joint_state_.velocity.size() == current_joint_state_.name.size()) {
+        for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+            const auto & joint_name = current_joint_state_.name[i];
+            if (model_.existJointName(joint_name)) {
+                pinocchio::JointIndex jid = model_.getJointId(joint_name);
+                // idx_v = indice di inizio nel vettore velocità (nv) per questo giunto
+                const auto & jmodel = model_.joints[jid];
+                const int idx_v = jmodel.idx_v(); // per Revolute: una sola componente
+                if (idx_v >= 6 && idx_v < qd_.size()) { // saltiamo la free-flyer (0..5)
+                    qd_[idx_v] = current_joint_state_.velocity[i];
+                }
+            }
+        }
+    }
 
     // --- CALCOLO MATRICI INERZIA E JACOBIANI ---
     pinocchio::crba(model_, data_, q_);
@@ -364,13 +386,31 @@ void ClikUamNode::update()
     );
     v_task += k_err_x_ * e_lin_world;
 
-    // {
-    //     std::ostringstream oss_v, oss_eW;
-    //     oss_v << v_task.transpose();
-    //     oss_eW << e_lin_world.transpose();
-    //     RCLCPP_INFO(this->get_logger(), "e_lin_world (3) = [%s]", oss_eW.str().c_str());
-    //     RCLCPP_INFO(this->get_logger(), "v_task (3) = [%s]", oss_v.str().c_str());
-    // }
+    // Termine di compensazione dinamica basato sul momentum totale: -Jb * Hb^{-1} * h  (solo parte lineare)
+    if (use_momentum_comp_) {
+        // 1. Aggiorna cinematica con velocità per coerenza
+        pinocchio::forwardKinematics(model_, data_, q_, qd_);
+        // 2. Centro di massa totale (world) e momentum centroidale (about CoM totale)
+        pinocchio::centerOfMass(model_, data_, q_);
+        pinocchio::computeCentroidalMomentum(model_, data_, q_, qd_); // data_.hg: [angular; linear] circa CoM totale
+        Eigen::Matrix<double,6,1> h_centroidal = data_.hg.toVector();
+        Eigen::Vector3d K_C = h_centroidal.head<3>();   // momento angolare rispetto al CoM totale
+        Eigen::Vector3d p_tot = h_centroidal.tail<3>(); // quantità di moto lineare totale
+        // 3. Trasforma il momento angolare al polo G (origine free-flyer = UAV) : K_G = K_C + r x p
+        Eigen::Vector3d com_world = data_.com[0];
+        Eigen::Vector3d G_world(q_[0], q_[1], q_[2]);
+        Eigen::Vector3d r_CG = com_world - G_world; // vettore da G a CoM totale
+        Eigen::Vector3d K_G = K_C + r_CG.cross(p_tot);
+        // 4. Costruisci h = [p; K_G] con ordine coerente alla formulazione MATLAB (lineare prima, angolare dopo)
+        Eigen::Matrix<double,6,1> h_concat;
+        h_concat.head<3>() = p_tot;
+        h_concat.tail<3>() = K_G;
+        // 5. Risolvi Hb * x = h  (x = Hb^{-1} h)
+        Eigen::Matrix<double,6,1> Hb_inv_h = H_b.ldlt().solve(h_concat);
+        // 6. Contributo lineare: - J_b(lineare) * Hb^{-1} * h
+        Eigen::Vector3d momentum_term = J_b.bottomRows(3) * Hb_inv_h;
+        v_task -= momentum_term;
+    }
 
     // Soluzione LC (Lagrange-Constraint) pesata come in MATLAB:
     //   A = J * W^{-1} * J^T
@@ -409,6 +449,16 @@ void ClikUamNode::update()
             }
         }
         command_msg.data[i] = current_pos + desired_joint_velocities(i) * dt;
+    }
+
+    {
+        std::ostringstream oss_v, oss_eW, oss_qd;
+        oss_v << v_task.transpose();
+        oss_eW << e_lin_world.transpose();
+        oss_qd << desired_joint_velocities.transpose();
+        RCLCPP_INFO(this->get_logger(), "e_lin_world (3) = [%s]", oss_eW.str().c_str());
+        RCLCPP_INFO(this->get_logger(), "v_task (3) = [%s]", oss_v.str().c_str());
+        RCLCPP_INFO(this->get_logger(), "qd (6) = [%s]", oss_qd.str().c_str());
     }
 
     // Pubblicazione del messaggio

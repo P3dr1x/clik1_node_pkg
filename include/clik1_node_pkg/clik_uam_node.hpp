@@ -100,6 +100,7 @@ private:
     // Parametri runtime
     std::string robot_name_;
     bool real_system_ = true;
+    bool use_momentum_comp_ = true; // abilita/disabilita termine -Jb*Hb^{-1}*[p;K]
 };
 
 #endif // CLIK_UAM_NODE_HPP_
