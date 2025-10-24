@@ -398,7 +398,7 @@
     <visual>
       <origin rpy="0 3.141592653589793 0" xyz="0 -0.005 0"/>
       <geometry>
-        <mesh filename="package://clik1_node_pkg/model/meshes/mobile_wx250s_10_gripper_finger.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://clik1_node_pkg/model/meshes/mobile_wx250s_meshes/mobile_wx250s_10_gripper_finger.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="interbotix_black"/>
     </visual>
