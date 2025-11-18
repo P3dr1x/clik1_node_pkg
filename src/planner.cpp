@@ -41,6 +41,14 @@ PlannerNode::PlannerNode() : Node("planner"), tf_buffer_(this->get_clock()), tf_
       "/t960a/pose", 10, std::bind(&PlannerNode::real_drone_pose_callback, this, std::placeholders::_1));
   }
 
+  // Facoltativo: sottoscrivi alla posa reale dell'EE pubblicata dal controller, se presente
+  // Usa una lambda diretta (evita ambiguità di std::bind con functor/lambda e function_traits)
+  ee_world_pose_sub_ = this->create_subscription<geometry_msgs::msg::Pose>(
+    "/ee_world_pose", 10, [this](const geometry_msgs::msg::Pose::SharedPtr msg){
+      this->current_ee_pose_ = *msg;
+      this->has_current_ee_pose_ = true;
+    });
+
   desired_ee_global_pose_pub_ = this->create_publisher<geometry_msgs::msg::Pose>(
     "/desired_ee_global_pose", rclcpp::QoS(10));
   desired_ee_velocity_pub_ = this->create_publisher<geometry_msgs::msg::Twist>(
@@ -252,25 +260,17 @@ void PlannerNode::publish_desired_global_pose(const geometry_msgs::msg::Pose& po
 }
 
 void PlannerNode::run_circular_trajectory() {
-  // Parametri input utente
-  std::cout << "Inserire POSIZIONE EE DI PARTENZA (x y z) in metri rispetto a mobile_wx250s/base_link" << std::endl;
-  std::cout << "Premi INVIO per usare la POSIZIONE CORRENTE dell'EE" << std::endl << "> ";
-  std::string input; std::getline(std::cin, input);
-  std::stringstream ss(input);
-  std::vector<double> p0v; double v; while (ss >> v) p0v.push_back(v);
-  Eigen::Vector3d p0;
-  bool use_current_pose = p0v.empty();
-  if (!use_current_pose && p0v.size() == 3) {
-    p0 = Eigen::Vector3d(p0v[0], p0v[1], p0v[2]);
-  }
+  // Parametri input utente (solo raggio e tempo)
+  std::string input;
 
-  std::cout << "Inserire RAGGIO della circonferenza in cm:\n> ";
+  std::cout << "Inserire RAGGIO della circonferenza in cm (deve essere < 20 cm):\n> ";
   std::getline(std::cin, input);
   double r_cm = 0.0; try { r_cm = std::stod(input); } catch (...) { r_cm = 0.0; }
   double R = r_cm / 100.0; // metri
-  if (R <= 0.0) {
-    RCLCPP_WARN(this->get_logger(), "Raggio non valido. Imposto R=0.08 m");
-    R = 0.08;
+  if (R <= 0.0 || R > 0.20) {
+    const char* forced = (R <= 0.0 ? "0.08 m" : "0.20 m");
+    RCLCPP_WARN(this->get_logger(), "Raggio fuori dai limiti (0 < R < 0.20 m). Imposto R=%s", forced);
+    R = (R <= 0.0 ? 0.08 : 0.20);
   }
 
   std::cout << "Inserire TEMPO DI PERCORRENZA totale in secondi:\n> ";
@@ -316,139 +316,124 @@ void PlannerNode::run_circular_trajectory() {
   drone_pose.orientation.w = vehicle_attitude_.q[0];
   tf2::Transform tf_drone_pose; tf2::fromMsg(drone_pose, tf_drone_pose);
 
-  // Se richiesto, usa la posa corrente dell'EE come punto di partenza
-  if (use_current_pose) {
-    // Attendi di avere joint states
-    rclcpp::Rate r(50);
-    for (int i = 0; i < 50 && rclcpp::ok() && !has_joint_state_; ++i) {
-      rclcpp::spin_some(this->get_node_base_interface());
-      r.sleep();
-    }
-    if (!has_joint_state_) {
-      RCLCPP_WARN(this->get_logger(), "Joint states non disponibili, uso default [0.3,0,0.36]");
-      p0 = Eigen::Vector3d(0.3, 0.0, 0.36);
-    } else {
-      // Costruisci configurazione q per Pinocchio: free-flyer (base) + giunti manipolatore
-      Eigen::VectorXd q = pinocchio::neutral(model_);
-      // Imposta base con posa attuale del drone
-      q[0] = vehicle_local_position_.x;
-      q[1] = vehicle_local_position_.y;
-      q[2] = vehicle_local_position_.z;
-      q[3] = vehicle_attitude_.q[1];
-      q[4] = vehicle_attitude_.q[2];
-      q[5] = vehicle_attitude_.q[3];
-      q[6] = vehicle_attitude_.q[0];
-      // Inserisci posizioni giunti disponibili
-      for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
-        const auto& jname = current_joint_state_.name[i];
-        if (!model_.existJointName(jname)) continue;
-        pinocchio::JointIndex jid = model_.getJointId(jname);
-        int idx_q = static_cast<int>(model_.joints[jid].idx_q());
-        if (idx_q >= 7 && idx_q < q.size()) {
-          q[idx_q] = current_joint_state_.position[i];
-        }
-      }
-      pinocchio::forwardKinematics(model_, data_, q);
-      pinocchio::updateFramePlacements(model_, data_);
-      const pinocchio::SE3& T_world_ee_now = data_.oMf[ee_frame_id_];
-      // Converti world EE -> locale base_link all’avvio: p_local = (world_from_arm_base0)^{-1} * p_world
-      tf2::Transform tf_world_from_arm_base0_tmp = tf_drone_pose * tf_base_to_arm_base;
-      tf2::Vector3 p_world(T_world_ee_now.translation().x(), T_world_ee_now.translation().y(), T_world_ee_now.translation().z());
-      tf2::Transform inv = tf_world_from_arm_base0_tmp.inverse();
-      tf2::Vector3 p_local_tf = inv * p_world;
-      p0 = Eigen::Vector3d(p_local_tf.x(), p_local_tf.y(), p_local_tf.z());
-      RCLCPP_INFO(this->get_logger(), "Start dal corrente EE (locale, FK): [%.3f %.3f %.3f]", p0.x(), p0.y(), p0.z());
-    }
-  }
-
-  // Converte p0 (locale base_link) in world e pubblica come setpoint iniziale di posizione (vel=0)
-  geometry_msgs::msg::Pose start_pose_local;
-  start_pose_local.position.x = p0.x();
-  start_pose_local.position.y = p0.y();
-  start_pose_local.position.z = p0.z();
-  start_pose_local.orientation.x = q_world_ee.x();
-  start_pose_local.orientation.y = q_world_ee.y();
-  start_pose_local.orientation.z = q_world_ee.z();
-  start_pose_local.orientation.w = q_world_ee.w();
-
-  tf2::Transform tf_arm_base_to_local_pose; tf2::fromMsg(start_pose_local, tf_arm_base_to_local_pose);
-
   // Congela la trasformazione world <- arm_base all'istante di avvio
   tf2::Transform tf_world_from_arm_base0 = tf_drone_pose * tf_base_to_arm_base;
-
-  tf2::Transform tf_world_to_start = tf_world_from_arm_base0 * tf_arm_base_to_local_pose;
-  geometry_msgs::msg::Pose start_pose_world; tf2::toMsg(tf_world_to_start, start_pose_world);
-
-  // Aggiorna orientazione di riferimento come quella del primo setpoint world
-  q_world_ee = Eigen::Quaterniond(start_pose_world.orientation.w, start_pose_world.orientation.x, start_pose_world.orientation.y, start_pose_world.orientation.z);
-
-  // Pubblica pose iniziale e velocità zero
+  // Se disponibile, usa la posa reale dell'EE pubblicata dal controller come start (più affidabile di joint_states stale)
+  // richiedi qualche aggiornamento ai callback. Aspetta brevemente (timeout) che il controller pubblichi /ee_world_pose
+  rclcpp::spin_some(this->get_node_base_interface());
+  const double ee_wait_timeout_s = 0.5; // attesa massima per la posa EE pubblicata dal controller
+  rclcpp::Time ee_wait_t0 = this->now();
+  while (rclcpp::ok() && !has_current_ee_pose_ && (this->now() - ee_wait_t0).seconds() < ee_wait_timeout_s) {
+    rclcpp::spin_some(this->get_node_base_interface());
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  // Attendi (breve) joint states
+  rclcpp::Rate r(50);
+  for (int i = 0; i < 50 && rclcpp::ok() && !has_joint_state_; ++i) {
+    rclcpp::spin_some(this->get_node_base_interface());
+    r.sleep();
+  }
+  // Costruisci configurazione q per Pinocchio: base (drone) + giunti manipolatore (se disponibili)
+  Eigen::VectorXd q = pinocchio::neutral(model_);
+  q[0] = vehicle_local_position_.x;
+  q[1] = vehicle_local_position_.y;
+  q[2] = vehicle_local_position_.z;
+  q[3] = vehicle_attitude_.q[1];
+  q[4] = vehicle_attitude_.q[2];
+  q[5] = vehicle_attitude_.q[3];
+  q[6] = vehicle_attitude_.q[0];
+  if (has_joint_state_) {
+    for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+      const auto &jname = current_joint_state_.name[i];
+      if (!model_.existJointName(jname)) continue;
+      pinocchio::JointIndex jid = model_.getJointId(jname);
+      int idx_q = static_cast<int>(model_.joints[jid].idx_q());
+      if (idx_q >= 7 && idx_q < q.size()) q[idx_q] = current_joint_state_.position[i];
+    }
+  }
+  geometry_msgs::msg::Pose start_pose_world;
+  // Pre-dichiara p_world0 in modo che sia disponibile sia quando la posa EE è fornita
+  tf2::Vector3 p_world0;
+  if (has_current_ee_pose_) {
+    // usa la posa misurata dall'altro nodo (più robusta)
+    start_pose_world = current_ee_pose_;
+    Eigen::Quaterniond q_start(start_pose_world.orientation.w, start_pose_world.orientation.x,
+                               start_pose_world.orientation.y, start_pose_world.orientation.z);
+    q_start.normalize();
+    q_world_ee = q_start;
+    // imposta p_world0 dalla posa misurata
+    p_world0 = tf2::Vector3(start_pose_world.position.x, start_pose_world.position.y, start_pose_world.position.z);
+  } else {
+    pinocchio::forwardKinematics(model_, data_, q);
+    pinocchio::updateFramePlacements(model_, data_);
+    const pinocchio::SE3 &T_world_ee_now = data_.oMf[ee_frame_id_];
+    p_world0 = tf2::Vector3(T_world_ee_now.translation().x(), T_world_ee_now.translation().y(), T_world_ee_now.translation().z());
+    start_pose_world.position.x = p_world0.x();
+    start_pose_world.position.y = p_world0.y();
+    start_pose_world.position.z = p_world0.z();
+    Eigen::Quaterniond q_start(T_world_ee_now.rotation()); q_start.normalize();
+    start_pose_world.orientation.x = q_start.x();
+    start_pose_world.orientation.y = q_start.y();
+    start_pose_world.orientation.z = q_start.z();
+    start_pose_world.orientation.w = q_start.w();
+    q_world_ee = q_start; // orientazione costante
+  }
   desired_ee_global_pose_pub_->publish(start_pose_world);
   geometry_msgs::msg::Twist zero_twist; desired_ee_velocity_pub_->publish(zero_twist);
+  RCLCPP_INFO(this->get_logger(), "Start EE world: [%.3f %.3f %.3f]", p_world0.x(), p_world0.y(), p_world0.z());
 
-  RCLCPP_INFO(this->get_logger(), "Avvio traiettoria circolare: R=%.3f m, T=%.2f s", R, T);
+  // Centro della circonferenza nel piano x-z DEL DRONE (fissato a t0):
+  // assi del drone in world all'istante iniziale
+  tf2::Quaternion q_drone0 = tf_drone_pose.getRotation();
+  tf2::Vector3 ex_w = tf2::quatRotate(q_drone0, tf2::Vector3(1.0, 0.0, 0.0));
+  tf2::Vector3 ey_w = tf2::quatRotate(q_drone0, tf2::Vector3(0.0, 1.0, 0.0));
+  tf2::Vector3 ez_w = tf2::quatRotate(q_drone0, tf2::Vector3(0.0, 0.0, 1.0));
 
-  // Centro della circonferenza sul piano x-z davanti (x maggiore) alla stessa quota z di p0; scegliamo centro = p0 + [R, 0, 0]
-  Eigen::Vector3d c_local = p0 - Eigen::Vector3d(R, 0.0, 0.0);
+  // Centro: traslato di R lungo -x_dronet0 a partire dalla posizione iniziale EE
+  tf2::Vector3 c_world_tf = p_world0 - R * ex_w;
+  RCLCPP_INFO(this->get_logger(), "Centro circonferenza (drone x-z) world: [%.3f %.3f %.3f]", c_world_tf.x(), c_world_tf.y(), c_world_tf.z());
 
-  // Profilo tempo con S-curve semplice (trapezoidale acc+dec con velocità angolare omega costante):
-  // Per semplicità: profilo cosenoide su 0..T: s(t) = 0.5*(1 - cos(pi * t / T)) in [0,1];
-  // Parametrizza angolo theta(t) = 2*pi * s(t); velocità angolare = dtheta/dt = 2*pi * ds/dt
-  auto now = this->now();
-  rclcpp::Time t0 = now;
+  // Traiettoria con velocità angolare costante intorno all'asse y del drone (fissato a t0)
+  const double omega = 2.0 * M_PI / T; // rad/s
   rclcpp::Rate rate(100); // 100 Hz
+  rclcpp::Time t0_ros = this->now();
   geometry_msgs::msg::Pose pose_msg;
   geometry_msgs::msg::Twist vel_msg;
-
   while (rclcpp::ok()) {
-    rclcpp::Time t = this->now();
-    double tau = (t - t0).seconds();
-    if (tau > T) break;
+    rclcpp::Time now_ros = this->now();
+    double t = (now_ros - t0_ros).seconds();
+    if (t < 0.0) t = 0.0;
+    if (t > T) t = T;
 
-    double s = 0.5 * (1.0 - std::cos(M_PI * tau / T)); // 0->1, ds/dt = 0 a t=0,T
-    double dsdt = 0.5 * (M_PI / T) * std::sin(M_PI * tau / T);
-    double theta = 2.0 * M_PI * s;            // 0 -> 2pi
-    double dtheta = 2.0 * M_PI * dsdt;        // derivata
+  // Parametrizzazione circolare nel piano x-z del drone a t0:
+  // p_des = c + R*cos(theta)*ex_w + R*sin(theta)*ez_w, con theta=omega*t
+  const double theta = omega * t;
+  tf2::Vector3 p_des_tf = c_world_tf + (std::cos(theta) * R) * ex_w + (std::sin(theta) * R) * ez_w;
+  tf2::Vector3 v_lin_tf = - omega * ey_w.cross(p_des_tf - c_world_tf);
 
-    // Punto sulla circonferenza nel piano x-z locale (y invariata)
-    Eigen::Vector3d p_local;
-    p_local.x() = c_local.x() + R * std::cos(theta);
-    p_local.y() = p0.y();
-    p_local.z() = c_local.z() + R * std::sin(theta);
-    // Velocità lineare locale (derivata) nel piano x-z
-    Eigen::Vector3d v_local;
-    v_local.x() = -R * std::sin(theta) * dtheta;
-    v_local.y() = 0.0;
-    v_local.z() =  R * std::cos(theta) * dtheta;
+    // Pose world: posizione p_des, orientazione costante q_world_ee
+  pose_msg.position.x = p_des_tf.x();
+  pose_msg.position.y = p_des_tf.y();
+  pose_msg.position.z = p_des_tf.z();
+  pose_msg.orientation.x = q_world_ee.x();
+  pose_msg.orientation.y = q_world_ee.y();
+  pose_msg.orientation.z = q_world_ee.z();
+  pose_msg.orientation.w = q_world_ee.w();
 
-  // Costruisci trasformazioni per convertire in world utilizzando la trasformazione congelata
-    tf2::Vector3 p_local_tf(p_local.x(), p_local.y(), p_local.z());
-    tf2::Vector3 v_local_tf(v_local.x(), v_local.y(), v_local.z());
+    // Velocità desiderata (WORLD): [lin; ang] con ω=0
+  vel_msg.linear.x = v_lin_tf.x();
+  vel_msg.linear.y = v_lin_tf.y();
+  vel_msg.linear.z = v_lin_tf.z();
+  vel_msg.angular.x = 0.0;
+  vel_msg.angular.y = 0.0;
+  vel_msg.angular.z = 0.0;
 
-  tf2::Vector3 p_world_tf = tf_world_from_arm_base0 * p_local_tf;
-  tf2::Vector3 v_world_tf = tf_world_from_arm_base0.getBasis() * v_local_tf; // sola rotazione congelata
+  desired_ee_global_pose_pub_->publish(pose_msg);
+  desired_ee_velocity_pub_->publish(vel_msg);
 
-    pose_msg.position.x = p_world_tf.x();
-    pose_msg.position.y = p_world_tf.y();
-    pose_msg.position.z = p_world_tf.z();
-    pose_msg.orientation.x = q_world_ee.x();
-    pose_msg.orientation.y = q_world_ee.y();
-    pose_msg.orientation.z = q_world_ee.z();
-    pose_msg.orientation.w = q_world_ee.w();
-
-    vel_msg.linear.x = v_world_tf.x();
-    vel_msg.linear.y = v_world_tf.y();
-    vel_msg.linear.z = v_world_tf.z();
-    vel_msg.angular.x = 0.0;
-    vel_msg.angular.y = 0.0;
-    vel_msg.angular.z = 0.0;
-
-    desired_ee_global_pose_pub_->publish(pose_msg);
-    desired_ee_velocity_pub_->publish(vel_msg);
-
+  if (t >= T) break;
     rate.sleep();
   }
-
   // Fine traiettoria: pubblica velocità nulla e ultima posa per fermo dolce
   geometry_msgs::msg::Twist zero; desired_ee_velocity_pub_->publish(zero);
 }
@@ -618,9 +603,21 @@ void PlannerNode::run_polyline_trajectory() {
 
   // Orientazione di riferimento: se il primo WP ha quaternione usalo, altrimenti prendi quella world del primo setpoint
   Eigen::Quaterniond q_world_ref(1,0,0,0);
+  // Prova ad aspettare brevemente la posa reale dell'EE pubblicata dal controller
+  const double ee_wait_timeout_s_poly = 0.5;
+  rclcpp::Time ee_wait_t0_poly = this->now();
+  while (rclcpp::ok() && !has_current_ee_pose_ && (this->now() - ee_wait_t0_poly).seconds() < ee_wait_timeout_s_poly) {
+    rclcpp::spin_some(this->get_node_base_interface());
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
   geometry_msgs::msg::Pose first_pose_world = to_world_pose(wps_local.front());
-  // Se abbiamo calcolato l'orientazione world corrente dell'EE (default), usala come riferimento costante
-  if (have_q_world_ee_current) {
+  // Se disponiamo della posa reale dell'EE fornita dal controller, usala come start (misurata)
+  if (has_current_ee_pose_) {
+    first_pose_world = current_ee_pose_;
+    q_world_ref = Eigen::Quaterniond(first_pose_world.orientation.w, first_pose_world.orientation.x, first_pose_world.orientation.y, first_pose_world.orientation.z);
+  } else if (have_q_world_ee_current) {
+    // Se non abbiamo la posa pubblicata, ma abbiamo ricavato l'orientazione via FK (default), usala
     first_pose_world.orientation.x = q_world_ee_current.x();
     first_pose_world.orientation.y = q_world_ee_current.y();
     first_pose_world.orientation.z = q_world_ee_current.z();

@@ -50,6 +50,10 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   sensor_msgs::msg::JointState current_joint_state_;
   bool has_joint_state_ = false;
+  // Subscription opzionale alla posa reale dell'EE pubblicata dal controller (se presente)
+  rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr ee_world_pose_sub_;
+  geometry_msgs::msg::Pose current_ee_pose_;
+  bool has_current_ee_pose_ = false;
 
   // Subscribers pose drone
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
