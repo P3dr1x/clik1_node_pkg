@@ -85,6 +85,10 @@ install(DIRECTORY
 install(PROGRAMS
   scripts/send_sleep_pose.py
   scripts/check_pinocchio.py
+  scripts/ik_circle_pinocchio.py
+  scripts/ik_uam_pinocchio.py
+  scripts/dk_uam_pinocchio.py
+  scripts/test_Jgen_pinocchio.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
