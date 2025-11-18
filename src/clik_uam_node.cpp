@@ -10,8 +10,8 @@
 #include "pinocchio/algorithm/frames.hpp"
 #include "pinocchio/algorithm/kinematics.hpp"
 #include "pinocchio/algorithm/crba.hpp" // Composite Rigid Body Algorithm (per inerzia)
-#include "pinocchio/algorithm/center-of-mass.hpp"
-#include "pinocchio/algorithm/centroidal.hpp"
+#include "pinocchio/spatial/se3.hpp" // per SE3 log6
+#include "pinocchio/spatial/explog.hpp" // per log3 su SO(3)
 #include "trajectory_msgs/msg/joint_trajectory_point.hpp"
 #include "interbotix_xs_msgs/msg/joint_group_command.hpp" // Include necessario per il nuovo tipo di messaggio
 #include "px4_ros_com/frame_transforms.h"
@@ -22,6 +22,9 @@
 #include "tf2_ros/transform_broadcaster.h"
 #include <Eigen/SVD>
 #include <Eigen/Dense>
+#include <iomanip>
+#include <algorithm>
+#include <chrono>
 
 
 ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()), tf_listener_(tf_buffer_)
@@ -112,56 +115,44 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
 
     // Allocazioni
     q_.resize(model_.nq);
+    q_.setZero();
     qd_.resize(model_.nv);
+    qd_.setZero();
     inertia_matrix_.resize(model_.nv, model_.nv);
     J_.resize(6, model_.nv);
     Jgen_.resize(6, model_.nv - 6);
     error_pose_ee_.resize(6);
-    desired_ee_velocity_vec_.setZero(6);
+    desired_ee_velocity_vec_.resize(6);
+    desired_ee_velocity_vec_.setZero();
     arm_joints_ = {"waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"};
-
-    declare_parameter("k_err_x_", 50.0);
+    declare_parameter("k_err_x_", 50.0); // guadagno posizione traslazionale
+    declare_parameter("damping", 1e-4);   // damping per pseudoinversa (Tikhonov)
+    // Parametri opzionali per pesi (spalla, forearm_roll, wrist_rotate hanno peso maggiore).
+    declare_parameter("shoulder_weight", 15.0);
+    declare_parameter("forearm_weight", 15.0);
+    declare_parameter("wrist_weight", 15.0);
+        // Opzione per sfruttare ridondanza cinematica: segui solo la traiettoria di posizione (ignora orientazione)
+        this->declare_parameter<bool>("redundant", false);
+        redundant_ = this->get_parameter("redundant").as_bool();
     k_err_x_ = get_parameter("k_err_x_").as_double();
-    K_matrix_ = Eigen::MatrixXd::Identity(6, 6) * k_err_x_;
-
-    // Parametro per abilitare/disabilitare la compensazione del termine di momento totale
-    this->declare_parameter<bool>("use_momentum_comp", false);
-    use_momentum_comp_ = this->get_parameter("use_momentum_comp").as_bool();
-
-    // LC solution parameters: weights and previous joint velocities (consider only 6 arm joints, ignore gripper)
-    const std::size_t n_arm = arm_joints_.size(); // 6
-    W_diag_.resize(n_arm);
-    W_diag_.setOnes();
-    qd_prev_arm_.resize(n_arm);
-    qd_prev_arm_.setZero();
-
-    // Allow overriding W via parameter (vector<double> of size n_arm)
-    std::vector<double> W_default(n_arm, 1.0);
-    // come in MATLAB: peso maggiore sulla seconda giunta ("shoulder")
-    for (std::size_t i = 0; i < arm_joints_.size() && i < n_arm; ++i) {
-        if (arm_joints_[i] == std::string("shoulder")) {
-            W_default[i] = 15.0;
-            break;
-        }
-    }
-    this->declare_parameter<std::vector<double>>("W_diag", W_default);
-    const auto W_param = this->get_parameter("W_diag").as_double_array();
-    if (W_param.size() == n_arm) {
-        for (std::size_t i = 0; i < n_arm; ++i) W_diag_[static_cast<Eigen::Index>(i)] = W_param[i];
-    } else {
-        RCLCPP_WARN(this->get_logger(), "Parametro W_diag dimensione %zu diversa da n_arm=%zu. Uso default.", W_param.size(), n_arm);
-        for (std::size_t i = 0; i < arm_joints_.size() && i < n_arm; ++i) {
-            if (arm_joints_[i] == std::string("shoulder")) {
-                W_diag_[static_cast<Eigen::Index>(i)] = 15.0;
-                break;
-            }
-        }
+    damping_ = get_parameter("damping").as_double();
+    double shoulder_w = get_parameter("shoulder_weight").as_double();
+    double forearm_w = get_parameter("forearm_weight").as_double();
+    double wrist_w = get_parameter("wrist_weight").as_double();
+    W_diag_.resize(arm_joints_.size());
+    for (size_t i = 0; i < arm_joints_.size(); ++i) {
+        const std::string &jn = arm_joints_[i];
+        if (jn == "shoulder") W_diag_[static_cast<Eigen::Index>(i)] = shoulder_w;
+        else if (jn == "forearm_roll") W_diag_[static_cast<Eigen::Index>(i)] = forearm_w;
+        else if (jn == "wrist_rotate") W_diag_[static_cast<Eigen::Index>(i)] = wrist_w;
+        else W_diag_[static_cast<Eigen::Index>(i)] = 1.0;
     }
 
     // Precalcolo una tantum: indici di velocità e limiti di velocità per i giunti del braccio
     {
         const int n_arm = static_cast<int>(arm_joints_.size());
         idx_v_arm_.resize(n_arm);
+        idx_q_arm_.resize(n_arm);
         v_max_.resize(n_arm);
         for (int i = 0; i < n_arm; ++i) {
             const std::string &jname = arm_joints_[static_cast<size_t>(i)];
@@ -172,6 +163,8 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
             }
             const pinocchio::JointIndex jid = model_.getJointId(jname);
             const int idx_v = static_cast<int>(model_.joints[jid].idx_v());
+            const int idx_q = static_cast<int>(model_.joints[jid].idx_q());
+            const int nq_j = static_cast<int>(model_.joints[jid].nq());
             if (idx_v < 0 || idx_v >= static_cast<int>(model_.nv)) {
                 RCLCPP_ERROR(this->get_logger(), "idx_v fuori range per joint '%s' (idx_v=%d, nv=%d)",
                              jname.c_str(), idx_v, static_cast<int>(model_.nv));
@@ -179,6 +172,13 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
                 return;
             }
             idx_v_arm_[i] = idx_v;
+            if (nq_j != 1 || idx_q < 0 || idx_q >= static_cast<int>(model_.nq)) {
+                RCLCPP_ERROR(this->get_logger(), "idx_q fuori range o nq_j!=1 per joint '%s' (idx_q=%d, nq=%d)",
+                             jname.c_str(), idx_q, static_cast<int>(model_.nq));
+                rclcpp::shutdown();
+                return;
+            }
+            idx_q_arm_[i] = idx_q;
             if (idx_v >= 0 && idx_v < model_.velocityLimit.size()) {
                 v_max_[i] = model_.velocityLimit[static_cast<Eigen::Index>(idx_v)];
             } else {
@@ -207,11 +207,15 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     control_timer_ = this->create_wall_timer(period_ns, std::bind(&ClikUamNode::update, this));
     RCLCPP_INFO(this->get_logger(), "control_rate_hz=%.2f Hz (periodo=%.3f ms)", rate_hz, 1000.0 / rate_hz);
     last_update_time_ = this->now();
+    this->declare_parameter<double>("desired_timeout_sec", 0.5);
+    desired_timeout_sec_ = this->get_parameter("desired_timeout_sec").as_double();
 }
 
 void ClikUamNode::desired_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg) {
     desired_ee_pose_world_ = *msg;
     desired_ee_pose_world_ready_ = true;
+    last_desired_msg_time_ = this->now();
+    have_desired_msg_ = true;
     //RCLCPP_INFO(this->get_logger(), "Nuova posa desiderata ricevuta: x=%.3f y=%.3f z=%.3f", msg->position.x, msg->position.y, msg->position.z);
 }
 
@@ -219,6 +223,8 @@ void ClikUamNode::desired_velocity_callback(const geometry_msgs::msg::Twist::Sha
     desired_ee_velocity_world_ = *msg;
     desired_ee_velocity_ready_ = true; // indica che siamo in una fase di tracking
     RCLCPP_INFO(this->get_logger(), "Nuova velocità desiderata ricevuta: x=%.3f y=%.3f z=%.3f", msg->linear.x, msg->linear.y, msg->linear.z);
+    last_desired_msg_time_ = this->now();
+    have_desired_msg_ = true;
 
 }
 
@@ -308,6 +314,8 @@ void ClikUamNode::update()
                         desired_ee_pose_world_ready_, has_current_joint_state_, has_vehicle_local_position_, has_vehicle_attitude_);
             waiting_log_printed_ = true;
         }
+        // last_update_time_ = this->now(); //Mantieni aggiornato il timestamp mentre si attende: evita un dt accumulato al primo ciclo utile
+
         return;
     }
     // appena tutti i dati disponibili, reset del flag
@@ -318,6 +326,9 @@ void ClikUamNode::update()
 
     // --- AGGIORNA STATO DEL ROBOT ---
     // 1. Popola il vettore di configurazione 'q' di Pinocchio
+    // Difensivamente azzero tutto il vettore di configurazione per evitare valori non inizializzati
+    q_.setZero();
+    qd_.setZero();
     q_[0] = vehicle_local_position_.x;
     q_[1] = vehicle_local_position_.y;
     q_[2] = vehicle_local_position_.z;
@@ -326,38 +337,33 @@ void ClikUamNode::update()
     q_[5] = vehicle_attitude_.q[3]; // z
     q_[6] = vehicle_attitude_.q[0]; // w
 
-    // 2. Leggi lo stato attuale dei giunti del braccio
+    // 2. LEGGI POSIZIONI GIUNTI BRACCIO
     for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
-        // Cerca il giunto nel modello di Pinocchio e aggiorna q_
         const auto& joint_name = current_joint_state_.name[i];
-        if (model_.existJointName(joint_name)) {
-            pinocchio::JointIndex joint_idx = model_.getJointId(joint_name);
-            int joint_idx_int = static_cast<int>(joint_idx);
-            if (joint_idx_int > 1 && (joint_idx_int - 2 + 7) < model_.nq) {
-                q_[joint_idx_int - 2 + 7] = current_joint_state_.position[i];
+        if (!model_.existJointName(joint_name)) continue;
+        const pinocchio::JointIndex jid = model_.getJointId(joint_name);
+        const int idx_q = static_cast<int>(model_.joints[jid].idx_q());
+        const int nq_j = static_cast<int>(model_.joints[jid].nq());
+        if (nq_j == 1) {
+            if (idx_q >= 0 && idx_q < static_cast<int>(model_.nq)) {
+                q_[idx_q] = current_joint_state_.position[i];
             }
         }
     }
     pinocchio::normalize(model_, q_);
 
-    // 3. Velocità generalizzate: assumiamo base ferma (hovering) -> prime 6 componenti zero
-    qd_.setZero();
-    if (current_joint_state_.velocity.size() == current_joint_state_.name.size()) {
-        for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
-            const auto & joint_name = current_joint_state_.name[i];
-            if (model_.existJointName(joint_name)) {
-                pinocchio::JointIndex jid = model_.getJointId(joint_name);
-                // idx_v = indice di inizio nel vettore velocità (nv) per questo giunto
-                const auto & jmodel = model_.joints[jid];
-                const int idx_v = jmodel.idx_v(); // per Revolute: una sola componente
-                if (idx_v >= 6 && idx_v < qd_.size()) { // saltiamo la free-flyer (0..5)
-                    qd_[idx_v] = current_joint_state_.velocity[i];
-                }
-            }
-        }
-    }
+    // Velocità generalizzate: assumiamo base ferma (hovering) -> prime 6 componenti zero
+    //qd_.setZero();
 
-    // --- CALCOLO MATRICI INERZIA E JACOBIANI ---
+    // 3. CALCOLO MATRICI INERZIA E JACOBIANI 
+    // Verifica difensiva: assicurati che q_ non contenga NaN/Inf prima di chiamare Pinocchio
+    if (!q_.allFinite()) {
+        // Trova primo indice non finito per diagnosi
+        int bad_idx = -1;
+        for (int i = 0; i < q_.size(); ++i) if (!std::isfinite(q_[i])) { bad_idx = i; break; }
+        RCLCPP_ERROR(this->get_logger(), "q_ contiene valori non finiti (NaN/Inf). Primo indice non finito = %d. Saltando ciclo update.", bad_idx);
+        return;
+    }
     pinocchio::crba(model_, data_, q_);
     data_.M.triangularView<Eigen::StrictlyLower>() = data_.M.transpose().triangularView<Eigen::StrictlyLower>();
     inertia_matrix_ = data_.M;
@@ -367,22 +373,32 @@ void ClikUamNode::update()
     pinocchio::updateFramePlacements(model_, data_);
     const pinocchio::SE3& ee_placement = data_.oMf[ee_frame_id_];
 
-    // Jacobiano del frame in LOCAL
-    Eigen::MatrixXd J_local(6, model_.nv);
-    pinocchio::computeFrameJacobian(model_, data_, q_, ee_frame_id_, pinocchio::ReferenceFrame::LOCAL, J_local);
-    // Inverti le prime 3 e le ultime 3 righe di J_local prima della trasformazione
-    Eigen::MatrixXd J_local_swapped(6, model_.nv);
-    J_local_swapped.topRows(3) = J_local.bottomRows(3);   // lineare al top
-    J_local_swapped.bottomRows(3) = J_local.topRows(3);   // angolare al bottom
-    // Trasforma in WORLD: J_world = Ad_{oMf} * J_local_swapped
-    J_ = ee_placement.toActionMatrix() * J_local_swapped;
+    // Jacobiano del frame in LOCAL_WORLD_ALIGNED
+    // RIC: il vettore velocità desiderata ha convenzione [lin; ang]
+    pinocchio::computeFrameJacobian(model_, data_, q_, ee_frame_id_, pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED, J_);
 
-    // conversione a geometry_msgs::Pose
+    // Estrai i blocchi necessari
+    Eigen::MatrixXd H_b = inertia_matrix_.topLeftCorner(6, 6);
+    Eigen::MatrixXd H_bm = inertia_matrix_.topRightCorner(6, model_.nv - 6);
+    Eigen::MatrixXd J_b = J_.leftCols(6);
+    Eigen::MatrixXd J_m = J_.rightCols(model_.nv - 6);
+
+    // 4. CALCOLO JACOBIANO GENERALIZZATO
+    Eigen::MatrixXd Hb_inv_Hbm = H_b.ldlt().solve(H_bm); // risolve H_b * X = H_bm
+    Jgen_ = J_m - J_b * Hb_inv_Hbm;
+
+    // 5. LETTURA INPUT
     geometry_msgs::msg::Pose current_ee_pose_world;
     current_ee_pose_world.position.x = ee_placement.translation().x();
     current_ee_pose_world.position.y = ee_placement.translation().y();
     current_ee_pose_world.position.z = ee_placement.translation().z();
+    // Costruisco il quaternion dall'orientazione dell'EE e lo normalizzo
     Eigen::Quaterniond ee_q(ee_placement.rotation());
+    if (!std::isfinite(ee_q.x()) || !std::isfinite(ee_q.y()) || !std::isfinite(ee_q.z()) || !std::isfinite(ee_q.w())) {
+        RCLCPP_ERROR(this->get_logger(), "EE quaternion non finito (NaN/Inf). Saltando ciclo update.");
+        return;
+    }
+    ee_q.normalize();
     current_ee_pose_world.orientation.x = ee_q.x();
     current_ee_pose_world.orientation.y = ee_q.y();
     current_ee_pose_world.orientation.z = ee_q.z();
@@ -391,18 +407,22 @@ void ClikUamNode::update()
     // Pubblica la posa assoluta dell'end-effector
     ee_world_pose_pub_->publish(current_ee_pose_world);
 
-    // Estrai i blocchi necessari
-    Eigen::MatrixXd H_b = inertia_matrix_.topLeftCorner(6, 6);
-    Eigen::MatrixXd H_bm = inertia_matrix_.topRightCorner(6, model_.nv - 6);
-    Eigen::MatrixXd J_b = J_.leftCols(6);
-    Eigen::MatrixXd J_m = J_.rightCols(model_.nv - 6);
 
-    // --- CALCOLO JACOBIANO GENERALIZZATO ---
-    // Usa solve al posto di inverse per stabilità numerica
-    Eigen::MatrixXd Hb_inv_Hbm = H_b.ldlt().solve(H_bm); // risolve H_b * X = H_bm
-    Jgen_ = J_m - J_b * Hb_inv_Hbm;
+    if (desired_ee_velocity_ready_) {
+        desired_ee_velocity_vec_ << desired_ee_velocity_world_.linear.x,
+                                    desired_ee_velocity_world_.linear.y,
+                                    desired_ee_velocity_world_.linear.z,
+                                    desired_ee_velocity_world_.angular.x,
+                                    desired_ee_velocity_world_.angular.y,
+                                    desired_ee_velocity_world_.angular.z;
 
-    // --- CALCOLO ERRORE DI POSA ---
+        // Log a frequenza limitata (1 Hz) del vettore velocità desiderata [lin; ang]
+        // RCLCPP_INFO_THROTTLE(
+        //     this->get_logger(), *this->get_clock(), 100,
+        //     "v_ee_des [lin;ang] = [%.3f %.3f %.3f | %.3f %.3f %.3f]",
+        //     v_ee_des(0), v_ee_des(1), v_ee_des(2), v_ee_des(3), v_ee_des(4), v_ee_des(5));
+    }
+
     // Converti pose in SE3 di Pinocchio
     pinocchio::SE3 desired_pose_se3(
         pinocchio::SE3::Quaternion(desired_ee_pose_world_.orientation.w, desired_ee_pose_world_.orientation.x, desired_ee_pose_world_.orientation.y, desired_ee_pose_world_.orientation.z),
@@ -413,99 +433,178 @@ void ClikUamNode::update()
         Eigen::Vector3d(current_ee_pose_world.position.x, current_ee_pose_world.position.y, current_ee_pose_world.position.z)
     );
 
-    // --- CONTROLLO CLIK: SOLO 3 DOF TRASLAZIONALI ---
-    // Estrai la parte lineare dello Jacobiano generalizzato (righe 3:5, ordine [omega; v])
-    // Usa solo i 6 giunti dell'arm: ultime 3 righe (lineare) e prime 6 colonne
-    const int n_arm_cols = static_cast<int>(arm_joints_.size());
-    const Eigen::MatrixXd Jgen_lin = Jgen_.bottomRows(3).leftCols(n_arm_cols); // 3 x 6
-    // v_task: velocità lineare desiderata dell'EE in world + termine proporzionale sull'errore di posizione (in WORLD)
-    Eigen::Vector3d v_task = Eigen::Vector3d::Zero();
-    if (desired_ee_velocity_ready_) {
-        v_task.x() = desired_ee_velocity_world_.linear.x;
-        v_task.y() = desired_ee_velocity_world_.linear.y;
-        v_task.z() = desired_ee_velocity_world_.linear.z;
-    }
-    // Errore di posizione in WORLD: e_lin_world = p_des - p_cur
-    const Eigen::Vector3d e_lin_world(
-        desired_ee_pose_world_.position.x - current_ee_pose_world.position.x,
-        desired_ee_pose_world_.position.y - current_ee_pose_world.position.y,
-        desired_ee_pose_world_.position.z - current_ee_pose_world.position.z
-    );
-    v_task += k_err_x_ * e_lin_world;
+    const int n_arm = static_cast<int>(arm_joints_.size());
 
-    // Termine di compensazione dinamica basato sul momentum totale: -Jb * Hb^{-1} * h  (solo parte lineare)
-    if (use_momentum_comp_) {
-        // 1. Aggiorna cinematica con velocità per coerenza
-        pinocchio::forwardKinematics(model_, data_, q_, qd_);
-        // 2. Centro di massa totale (world) e momentum centroidale (about CoM totale)
-        pinocchio::centerOfMass(model_, data_, q_);
-        pinocchio::computeCentroidalMomentum(model_, data_, q_, qd_); // data_.hg: [angular; linear] circa CoM totale
-        Eigen::Matrix<double,6,1> h_centroidal = data_.hg.toVector();
-        Eigen::Vector3d K_C = h_centroidal.head<3>();   // momento angolare rispetto al CoM totale
-        Eigen::Vector3d p_tot = h_centroidal.tail<3>(); // quantità di moto lineare totale
-        // 3. Trasforma il momento angolare al polo G (origine free-flyer = UAV) : K_G = K_C + r x p
-        Eigen::Vector3d com_world = data_.com[0];
-        Eigen::Vector3d G_world(q_[0], q_[1], q_[2]);
-        Eigen::Vector3d r_CG = com_world - G_world; // vettore da G a CoM totale
-        Eigen::Vector3d K_G = K_C + r_CG.cross(p_tot);
-        // 4. Costruisci h = [p; K_G] con ordine coerente alla formulazione MATLAB (lineare prima, angolare dopo)
-        Eigen::Matrix<double,6,1> h_concat;
-        h_concat.head<3>() = p_tot;
-        h_concat.tail<3>() = K_G;
-        // 5. Risolvi Hb * x = h  (x = Hb^{-1} h)
-        Eigen::Matrix<double,6,1> Hb_inv_h = H_b.ldlt().solve(h_concat);
-        // 6. Contributo lineare: - J_b(lineare) * Hb^{-1} * h
-        Eigen::Vector3d momentum_term = J_b.bottomRows(3) * Hb_inv_h;
-        v_task -= momentum_term;
+    // 6. CALCOLO ERRORE POSE END-EFFECTOR
+    // - Posizione: errore lineare in world e_p = p_des - p_cur
+    // - Orientazione: errore angolare in world e_w = log( R_des * R_cur^T )
+    const Eigen::Vector3d p_cur = ee_placement.translation();
+    // Assicuriamoci che la matrice di rotazione dell'EE sia ortonormale
+    Eigen::Matrix3d R_cur = ee_placement.rotation();
+    // ricostruisco R_cur via quaternione normalizzato per correggere eventuali piccole derivazioni numeriche
+    Eigen::Quaterniond q_cur(R_cur);
+    if (!std::isfinite(q_cur.x()) || !std::isfinite(q_cur.y()) || !std::isfinite(q_cur.z()) || !std::isfinite(q_cur.w())) {
+        RCLCPP_ERROR(this->get_logger(), "R_cur non finita (NaN/Inf). Saltando ciclo update.");
+        return;
+    }
+    q_cur.normalize();
+    R_cur = q_cur.toRotationMatrix();
+    Eigen::Quaterniond qd_world(desired_ee_pose_world_.orientation.w,
+                                desired_ee_pose_world_.orientation.x,
+                                desired_ee_pose_world_.orientation.y,
+                                desired_ee_pose_world_.orientation.z);
+    qd_world.normalize();
+    Eigen::Matrix3d R_des = qd_world.toRotationMatrix();
+    // Ricostruisco R_des via quaternione normalizzato per sicurezza
+    Eigen::Quaterniond q_des(R_des);
+    if (!std::isfinite(q_des.x()) || !std::isfinite(q_des.y()) || !std::isfinite(q_des.z()) || !std::isfinite(q_des.w())) {
+        RCLCPP_ERROR(this->get_logger(), "R_des non finita (NaN/Inf). Saltando ciclo update.");
+        return;
+    }
+    q_des.normalize();
+    R_des = q_des.toRotationMatrix();
+    const Eigen::Vector3d p_des(desired_ee_pose_world_.position.x,
+                                desired_ee_pose_world_.position.y,
+                                desired_ee_pose_world_.position.z);
+
+    const Eigen::Vector3d e_pos = p_des - p_cur; // world
+    // Calcolo l'errore di orientazione tramite quaternioni per garantire ortogonalità
+    Eigen::Matrix3d R_err_world = R_des * R_cur.transpose();
+    // Ricostruisco R_err_world via quaternione normalizzato
+    Eigen::Quaterniond q_err(R_err_world);
+    if (!std::isfinite(q_err.x()) || !std::isfinite(q_err.y()) || !std::isfinite(q_err.z()) || !std::isfinite(q_err.w())) {
+        RCLCPP_ERROR(this->get_logger(), "R_err_world non finita (NaN/Inf). Saltando ciclo update.");
+        return;
+    }
+    q_err.normalize();
+    R_err_world = q_err.toRotationMatrix();
+    const Eigen::Vector3d e_ang = pinocchio::log3(R_err_world); // world
+
+    Eigen::Matrix<double,6,1> e6;
+    e6.head<3>() = e_pos;
+    e6.tail<3>() = e_ang;
+
+    // 7. CALCOLO DELLA VELOCITÀ DEI GIUNTI TRAMITE INVERSIONE PESATA DELLO JACOBIANO GENERALIZZATO
+    // Separazione feed-forward (q_ik) e feedback (delta_q) in spazio giunti
+    // qdot_ik = Jgen^+ * v_ff, qdot_fb = Jgen^+ * (K * errore)
+    Eigen::VectorXd qdot_ik;
+    Eigen::VectorXd qdot_fb;
+    // Costruisci matrice di peso inverso W^{-1}
+    Eigen::VectorXd W_inv_vec = W_diag_.cwiseInverse();
+    Eigen::MatrixXd W_inv = W_inv_vec.asDiagonal(); // n_arm x n_arm
+
+    if (redundant_) {
+        // Ridondante: usa solo prime 3 righe di Jgen_ (convenzione richiesta) -> Jgen_lin
+        Eigen::MatrixXd Jgen_lin = Jgen_.topRows(3).leftCols(n_arm); // 3 x n_arm
+        // A = J * W^{-1} * J^T
+        Eigen::MatrixXd A = Jgen_lin * W_inv * Jgen_lin.transpose(); // 3x3
+        Eigen::MatrixXd Areg = A + damping_ * Eigen::MatrixXd::Identity(A.rows(), A.cols());
+        Eigen::MatrixXd Ainv = Areg.ldlt().solve(Eigen::MatrixXd::Identity(A.rows(), A.cols()));
+        Eigen::MatrixXd Pinv = W_inv * Jgen_lin.transpose() * Ainv; // n_arm x 3
+        Eigen::Vector3d v_des_pos = desired_ee_velocity_vec_.head<3>();
+        qdot_ik = Pinv * v_des_pos;                      // n_arm x 1
+        qdot_fb = Pinv * (k_err_x_ * e_pos);             // n_arm x 1
+    } else {
+        // Caso non ridondante: usa l'intero Jacobiano generalizzato Jgen_ (6 x n_arm)
+        // A = Jgen * W^{-1} * Jgen^T
+        Eigen::MatrixXd A = Jgen_ * W_inv * Jgen_.transpose(); // 6x6
+        Eigen::MatrixXd Areg = A + damping_ * Eigen::MatrixXd::Identity(A.rows(), A.cols());
+        Eigen::MatrixXd Ainv = Areg.ldlt().solve(Eigen::MatrixXd::Identity(A.rows(), A.cols()));
+        Eigen::MatrixXd Pinv = W_inv * Jgen_.transpose() * Ainv; // n_arm x 6
+        qdot_ik = Pinv * desired_ee_velocity_vec_;               // n_arm x 1 (feed-forward)
+        qdot_fb = Pinv * (k_err_x_ * e6);                        // n_arm x 1 (feedback pose intera)
     }
 
-    // Soluzione LC (Lagrange-Constraint) pesata come in MATLAB:
-    //   A = J * W^{-1} * J^T
-    //   B = W^{-1} * J^T
-    //   pinv_weighted = B * (A \ I)
-    //   qd = pinv_weighted * Vgen + (I - pinv_weighted * J) * qd_ob
-    const auto n_arm = static_cast<int>(arm_joints_.size());
-    //Eigen::VectorXd qd_ob = qd_prev_arm_;
-    Eigen::VectorXd qd_ob;
-    qd_ob.setZero(n_arm);
-    if (qd_ob.size() != n_arm) {
-        qd_ob = Eigen::VectorXd::Zero(n_arm);
+    // Saturazione delle velocità dei giunti in base ai limiti URDF (per-giunto)
+    // Applico la saturazione sul contributo totale qdot_tot = qdot_ik + qdot_fb,
+    // ridistribuendo proporzionalmente su entrambi i termini per preservarne il rapporto.
+    for (int i = 0; i < n_arm; ++i) {
+        const double vmax_i = v_max_[i];
+        if (vmax_i > 0.0) {
+            const double qdot_tot_i = qdot_ik[i] + qdot_fb[i];
+            const double abs_tot = std::abs(qdot_tot_i);
+            if (abs_tot > vmax_i) {
+                const double s = vmax_i / abs_tot; // 0 < s < 1
+                qdot_ik[i] *= s;
+                qdot_fb[i] *= s;
+            }
+        }
     }
-    //const Eigen::Vector3d Vgen = v_task;
-    const Eigen::VectorXd Winv_diag = W_diag_.cwiseInverse();
-    const Eigen::Matrix3d A = (Jgen_lin * Winv_diag.asDiagonal() * Jgen_lin.transpose()).eval();
-    const Eigen::MatrixXd B = Winv_diag.asDiagonal() * Jgen_lin.transpose(); // n x 3
-    // Solve A \ I
-    Eigen::Matrix3d A_inv_like = A.ldlt().solve(Eigen::Matrix3d::Identity());
-    const Eigen::MatrixXd pinv_weighted = B * A_inv_like; // n x 3
-    // qd
-    const Eigen::MatrixXd I_n = Eigen::MatrixXd::Identity(n_arm, n_arm);
-    Eigen::VectorXd desired_joint_velocities = pinv_weighted * v_task + (I_n - pinv_weighted * Jgen_lin) * qd_ob;
 
-    // Integrazione per ottenere posizione
-    double dt = 0.01; // 100Hz
+    // Log throttled delle velocità dei giunti (ik, fb, tot)
+    {
+        std::ostringstream oss_ik, oss_fb, oss_tot;
+        oss_ik.setf(std::ios::fixed); oss_fb.setf(std::ios::fixed); oss_tot.setf(std::ios::fixed);
+        oss_ik << std::setprecision(5); oss_fb << std::setprecision(5); oss_tot << std::setprecision(5);
+        oss_ik << "qdot_ik [rad/s] = [";
+        oss_fb << "qdot_fb [rad/s] = [";
+        oss_tot << "qdot_tot [rad/s] = [";
+        for (int i = 0; i < qdot_ik.size(); ++i) {
+            const double qdot_tot_i = qdot_ik[i] + qdot_fb[i];
+            oss_ik << qdot_ik[i] << (i + 1 < qdot_ik.size() ? ", " : "");
+            oss_fb << qdot_fb[i] << (i + 1 < qdot_fb.size() ? ", " : "");
+            oss_tot << qdot_tot_i << (i + 1 < qdot_ik.size() ? ", " : "");
+        }
+        oss_ik << "]"; oss_fb << "]"; oss_tot << "]";
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 100, "%s | %s | %s",
+                             oss_ik.str().c_str(), oss_fb.str().c_str(), oss_tot.str().c_str());
+    }
+
+    // 8. INTEGRAZIONE E CALCOLO COMANDO POSIZIONE GIUNTI
+    const rclcpp::Time now = this->now();
+    double dt = (now - last_update_time_).seconds();
+    last_update_time_ = now;
+    dt = std::clamp(dt, 0.0, 0.02); // max 20 ms
+
+    // Stato misurato dei giunti del braccio ricavato direttamente da q_ tramite idx_q_arm_
+    Eigen::VectorXd q_arm_from_q(n_arm); q_arm_from_q.setZero();
+    for (int i = 0; i < n_arm; ++i) {
+        int iq = idx_q_arm_[i];
+        if (iq >= 0 && iq < q_.size()) q_arm_from_q[i] = q_[iq];
+    }
+
+    // Buffer interni: q_ik (feed-forward) e delta_q (feedback)
+    static bool ff_fb_initialized = false;
+    static Eigen::VectorXd q_ik;    // n_arm
+    static Eigen::VectorXd delta_q; // n_arm
+    const bool need_reinit = (!have_desired_msg_) || ((this->now() - last_desired_msg_time_).seconds() > desired_timeout_sec_);
+    if (!ff_fb_initialized || need_reinit) {
+        q_ik = q_arm_from_q; // inizializza o reinizializza con misurato corrente
+        delta_q = Eigen::VectorXd::Zero(n_arm);
+        ff_fb_initialized = true;
+    }
+
+    // Integrazione separata
+    q_ik    = q_ik    + qdot_ik * dt;      // cinematica inversa prevista
+    delta_q = delta_q + qdot_fb * dt;      // correzione di feedback accumulata
+
+    // Configurazione da comandare: q_cmd = q_ik + delta_q
+    if (!arm_cmd_initialized_) {
+        arm_cmd_pos_.assign(arm_joints_.size(), 0.0);
+        arm_cmd_initialized_ = true;
+    }
+    for (int i = 0; i < n_arm; ++i) {
+        arm_cmd_pos_[static_cast<size_t>(i)] = q_ik[i] + delta_q[i];
+    }
+
     std_msgs::msg::Float64MultiArray command_msg;
     command_msg.data.resize(arm_joints_.size());
     for (size_t i = 0; i < arm_joints_.size(); ++i) {
-        double current_pos = 0.0;
-        const auto& joint_name_to_find = arm_joints_[i];
-        for (size_t j = 0; j < current_joint_state_.name.size(); ++j) {
-            if (current_joint_state_.name[j] == joint_name_to_find) {
-                current_pos = current_joint_state_.position[j];
-                break;
-            }
-        }
-        command_msg.data[i] = current_pos + desired_joint_velocities(i) * dt;
+        command_msg.data[i] = arm_cmd_pos_[i];
     }
 
+    // Log: angoli di giunto comandati in gradi (ordine: waist, shoulder, elbow, forearm_roll, wrist_angle, wrist_rotate)
     {
-        std::ostringstream oss_v, oss_eW, oss_qd;
-        oss_v << v_task.transpose();
-        oss_eW << e_lin_world.transpose();
-        oss_qd << desired_joint_velocities.transpose();
-        RCLCPP_INFO(this->get_logger(), "e_lin_world (3) = [%s]", oss_eW.str().c_str());
-        RCLCPP_INFO(this->get_logger(), "v_task (3) = [%s]", oss_v.str().c_str());
-        RCLCPP_INFO(this->get_logger(), "qd (6) = [%s]", oss_qd.str().c_str());
+        constexpr double RAD2DEG = 57.29577951308232; // 180/pi
+        std::ostringstream oss_cmd_deg;
+        oss_cmd_deg.setf(std::ios::fixed);
+        oss_cmd_deg << std::setprecision(2);
+        for (size_t i = 0; i < command_msg.data.size(); ++i) {
+            double deg = command_msg.data[i] * RAD2DEG;
+            oss_cmd_deg << deg;
+            if (i + 1 < command_msg.data.size()) oss_cmd_deg << ", ";
+        }
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 100, "commanded joint angles [deg] = [%s]", oss_cmd_deg.str().c_str());
     }
 
     // Pubblicazione del messaggio
@@ -521,8 +620,6 @@ void ClikUamNode::update()
         if (arm_controller_pub_) arm_controller_pub_->publish(command_msg);
     }
 
-    // Aggiorna memoria per soluzione LC al prossimo timestep
-    qd_prev_arm_ = desired_joint_velocities;
 }
 
 int main(int argc, char *argv[])

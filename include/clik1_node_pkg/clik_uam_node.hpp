@@ -96,11 +96,30 @@ private:
     double k_err_x_; // Guadagno proporzionale configurabile
 
     std::vector<std::string> arm_joints_;
+    std::vector<std::string> active_arm_joints_;
+    // Indici di velocità per i giunti del braccio (ordine arm_joints_), precomputati una volta
+    std::vector<int> idx_v_arm_;
+    // Indici di posizione (q) per i giunti del braccio (ordine arm_joints_), precomputati una volta
+    std::vector<int> idx_q_arm_;
+    // Limiti massimi di velocità per-giunto [rad/s] (ordine arm_joints_), precomputati una volta
+    Eigen::VectorXd v_max_;
 
     // Parametri runtime
     std::string robot_name_;
     bool real_system_ = true;
-    bool use_momentum_comp_ = true; // abilita/disabilita termine -Jb*Hb^{-1}*[p;K]
+    // Se true, ignora l'orientazione e usa solo la parte traslazionale (prime 3 righe del Jacobiano)
+    bool redundant_ = false;
+    // Damping per pseudoinversa pesata (Tikhonov)
+    double damping_ = 0.0;
+    // Integrazione comandi posizione giunti braccio a frequenza di controllo
+    std::vector<double> arm_cmd_pos_;
+    bool arm_cmd_initialized_ = false;
+    rclcpp::Time last_update_time_;
+
+    // Timeout per reinizializzare l'integrazione se mancano riferimenti desiderati
+    rclcpp::Time last_desired_msg_time_;
+    bool have_desired_msg_ = false;
+    double desired_timeout_sec_ = 0.5;
 };
 
 #endif // CLIK_UAM_NODE_HPP_
