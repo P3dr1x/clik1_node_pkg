@@ -158,8 +158,55 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
         }
     }
 
-    // Timer controllo
-    control_timer_ = this->create_wall_timer(std::chrono::milliseconds(10), std::bind(&ClikUamNode::update, this));  // 100 Hz
+    // Precalcolo una tantum: indici di velocità e limiti di velocità per i giunti del braccio
+    {
+        const int n_arm = static_cast<int>(arm_joints_.size());
+        idx_v_arm_.resize(n_arm);
+        v_max_.resize(n_arm);
+        for (int i = 0; i < n_arm; ++i) {
+            const std::string &jname = arm_joints_[static_cast<size_t>(i)];
+            if (!model_.existJointName(jname)) {
+                RCLCPP_ERROR(this->get_logger(), "Joint '%s' non esiste nel modello.", jname.c_str());
+                rclcpp::shutdown();
+                return;
+            }
+            const pinocchio::JointIndex jid = model_.getJointId(jname);
+            const int idx_v = static_cast<int>(model_.joints[jid].idx_v());
+            if (idx_v < 0 || idx_v >= static_cast<int>(model_.nv)) {
+                RCLCPP_ERROR(this->get_logger(), "idx_v fuori range per joint '%s' (idx_v=%d, nv=%d)",
+                             jname.c_str(), idx_v, static_cast<int>(model_.nv));
+                rclcpp::shutdown();
+                return;
+            }
+            idx_v_arm_[i] = idx_v;
+            if (idx_v >= 0 && idx_v < model_.velocityLimit.size()) {
+                v_max_[i] = model_.velocityLimit[static_cast<Eigen::Index>(idx_v)];
+            } else {
+                v_max_[i] = 0.0; // 0 -> nessun limite applicato a runtime
+            }
+        }
+        // Log una tantum dei limiti
+        std::ostringstream oss;
+        oss.setf(std::ios::fixed);
+        oss << std::setprecision(3);
+        oss << "v_max [rad/s] precomputati = [";
+        for (int i = 0; i < n_arm; ++i) {
+            oss << v_max_[i];
+            if (i + 1 < n_arm) oss << ", ";
+        }
+        oss << "]";
+        RCLCPP_INFO(this->get_logger(), "%s", oss.str().c_str());
+    }
+
+    // Timer di update() controllo parametrico
+    this->declare_parameter<double>("control_rate_hz", 80.0);
+    double rate_hz = this->get_parameter("control_rate_hz").as_double();
+    rate_hz = std::max(1.0, rate_hz); // salvaguardia: minimo 1 Hz
+    const auto period_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(1.0 / rate_hz));
+    control_timer_ = this->create_wall_timer(period_ns, std::bind(&ClikUamNode::update, this));
+    RCLCPP_INFO(this->get_logger(), "control_rate_hz=%.2f Hz (periodo=%.3f ms)", rate_hz, 1000.0 / rate_hz);
+    last_update_time_ = this->now();
 }
 
 void ClikUamNode::desired_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg) {
