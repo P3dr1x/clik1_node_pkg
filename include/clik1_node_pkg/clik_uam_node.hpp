@@ -92,10 +92,22 @@ private:
     bool has_current_joint_state_ = false;
 
     std::vector<std::string> arm_joints_;
+    std::vector<std::string> active_arm_joints_;
+    // Indici di velocità per i giunti del braccio (ordine arm_joints_), precomputati una volta
+    std::vector<int> idx_v_arm_;
+    // Limiti massimi di velocità per-giunto [rad/s] (ordine arm_joints_), precomputati una volta
+    Eigen::VectorXd v_max_;
 
     // Parametri runtime
     std::string robot_name_;
     bool real_system_ = true;
+    // Se true, ignora l'orientazione e usa solo la parte traslazionale (prime 3 righe del Jacobiano)
+    bool redundant_ = false;
+
+    // Integrazione comandi posizione giunti braccio a frequenza di controllo
+    std::vector<double> arm_cmd_pos_;
+    bool arm_cmd_initialized_ = false;
+    rclcpp::Time last_update_time_;
 };
 
 #endif // CLIK_UAM_NODE_HPP_
