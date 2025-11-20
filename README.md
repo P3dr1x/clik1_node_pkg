@@ -62,8 +62,8 @@ ros2 run clik_node_pkg planner
 Now the user will be asked to choose which action to perform with the end-effector (for now only positioning and circu;ar trakjectory tracking can be ordered).
 1. If `Positioning` is chosen, user will be asked to type the desired EE pose w.r.t. the current pose of the manipulator base. The user has to type 7 numbers (desired position + quaternion). 
 If no or invalid input is given by the user, the desired relative EE pose commanded will be `{0.45 0.0 0.36 0 0 0 1}`.
-2. If `Circular trajectory (x-z plane)` is chosen, the user will be asked to insert 3 parameters of the trajectory (starting point position, radius of the trajectory and time of completion).
-3. If `Polyline trajectory` is chosen, the user will be asked to input the trajectory waypoints coordinates. The end-effector will go in each waypoint through a linear path. The user can also choose the time of travel for the segments in the trajectory.
+2. If `Circular trajectory (x-z plane)` is chosen, the user will be asked to insert 2 parameters of the trajectory (radius of the trajectory and time of completion). The trajectory will begin from the current EE pose.
+3. If `Polyline trajectory` is chosen, the user will be asked to input the trajectory waypoints coordinates. If Enter is pressed, a default trajectory will be commanded (a rectangle). The end-effector will go in each commanded waypoint through a linear path. The user can also choose the time of travel for the segments in the path.
 
 For running the controller 
 
@@ -84,8 +84,12 @@ ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err_x_:=50.0
 Parameter      |Default value |   Description    |
 |-------------------|---------------|------------|
 | `use_gazebo_pose` | `true` | The node will try to subscribe to the `/world/default/dynamic_pose/info` topic bridged from Gazebo to ROS2 for getting the UAV pose. 
-| `k_err_x_` | `50.0` | Is the gain value for the EE feedback 
-| `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic
+| `k_err_x_` | `20.0` | Is the gain value for the EE feedback. 
+| `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic.
+| `damping_` | `1e-4` | Damping parameter for damped pseudoinversion
+| `redundant` | `false` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
+| `control_rate_hz` | `100.0` | Frequency at which the `update()` loop of the controller node will operate.
+| `<joint_name>_weight` | `15.0`, `25.0` | Set the weight of the specific joint. This influences the weight matrix used in the weighted pseudoinversion. You can choose `shoulder`, `forearm_roll`, `wrist_rotate`.
 
 
 ## Usage with real system (Motion Capture)
@@ -131,15 +135,16 @@ ros2 run clik1_node_pkg planner
 
 ## Mathematics
 
-The algorithm computes in real-time the reference velocities to manipulators motors must have in order to keep the EE at the desired global pose. This is done through:
+The algorithm computes in real-time the reference velocities for manipulators motors in order to get the EE to complete the task planned through the `planner` node. This is done through:
 
-$$\dot{\mathbf{q}} = [\mathbf{J}_{\text{gen}}]^{\dagger}[\mathbf{K}]\mathbf{e}_x$$
+$$\dot{\mathbf{q}} = [\mathbf{J}_{\text{gen}}]^{\dagger}(\mathbf{\nu}_{\text{e,des}}+[\mathbf{K}]\mathbf{e}_x)$$
 
 where:
 
 - $[\mathbf{J}_{\text{gen}}]$ is the **Generalized Jacobian matrix**.
+- $\mathbf{\nu}_{\text{e,des}}$ is the EE desired twist
 - $[\mathbf{K}]$ is the gain matrix. For now is simply `k_err_x_*Identity(6,6)`.
-- $\mathbf{e}_{x}$ is EE pose error vector. It is computed as $\mathbf{e}_{x} = \log_{se(3)}([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})$.
+- $\mathbf{e}_{x}$ is EE task-space error vector. It is computed as $\mathbf{e}_{x} = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})$.
 
 For more info check the papers (please consider citing):
 
