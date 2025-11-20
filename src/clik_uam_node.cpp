@@ -124,7 +124,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     error_pose_ee_.resize(6);
     desired_ee_velocity_vec_.resize(6);
     desired_ee_velocity_vec_.setZero();
-    arm_joints_ = {"waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"}; // in future they can be specified through yaml file
+    arm_joints_ = {"waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"}; // in future they might be specified through yaml file
     declare_parameter("k_err_x_", 20.0); // guadagno posizione traslazionale
     declare_parameter("damping", 1e-4);   // damping per pseudoinversa (Tikhonov)
     // Parametri opzionali per pesi (spalla, forearm_roll, wrist_rotate hanno peso maggiore).
@@ -397,16 +397,12 @@ void ClikUamNode::update()
     current_ee_pose_world.position.y = ee_placement.translation().y();
     current_ee_pose_world.position.z = ee_placement.translation().z();
     // Costruisco il quaternion dall'orientazione dell'EE e lo normalizzo
-    Eigen::Quaterniond ee_q(ee_placement.rotation());
-    // if (!std::isfinite(ee_q.x()) || !std::isfinite(ee_q.y()) || !std::isfinite(ee_q.z()) || !std::isfinite(ee_q.w())) {
-    //     RCLCPP_ERROR(this->get_logger(), "EE quaternion non finito (NaN/Inf). Saltando ciclo update.");
-    //     return;
-    // }
-    ee_q.normalize();
-    current_ee_pose_world.orientation.x = ee_q.x();
-    current_ee_pose_world.orientation.y = ee_q.y();
-    current_ee_pose_world.orientation.z = ee_q.z();
-    current_ee_pose_world.orientation.w = ee_q.w();
+    Eigen::Quaterniond ee_cur_quat(ee_placement.rotation());
+    ee_cur_quat.normalize();
+    current_ee_pose_world.orientation.x = ee_cur_quat.x();
+    current_ee_pose_world.orientation.y = ee_cur_quat.y();
+    current_ee_pose_world.orientation.z = ee_cur_quat.z();
+    current_ee_pose_world.orientation.w = ee_cur_quat.w();
 
     // Pubblica la posa assoluta dell'end-effector
     ee_world_pose_pub_->publish(current_ee_pose_world);
@@ -432,49 +428,23 @@ void ClikUamNode::update()
     );
 
     // 6. CALCOLO ERRORE POSE END-EFFECTOR
-    // - Posizione: errore lineare in world e_p = p_des - p_cur
-    // - Orientazione: errore angolare in world e_w = log( R_des * R_cur^T )
-    const Eigen::Vector3d p_cur = ee_placement.translation();
-    // Assicuriamoci che la matrice di rotazione dell'EE sia ortonormale
-    Eigen::Matrix3d R_cur = ee_placement.rotation();
-    // ricostruisco R_cur via quaternione normalizzato per correggere eventuali piccole derivazioni numeriche
-    Eigen::Quaterniond q_cur(R_cur);
-    // if (!std::isfinite(q_cur.x()) || !std::isfinite(q_cur.y()) || !std::isfinite(q_cur.z()) || !std::isfinite(q_cur.w())) {
-    //     RCLCPP_ERROR(this->get_logger(), "R_cur non finita (NaN/Inf). Saltando ciclo update.");
-    //     return;
-    // }
-    q_cur.normalize();
-    R_cur = q_cur.toRotationMatrix();
 
-    Eigen::Quaterniond qd_world(desired_ee_pose_world_.orientation.w,
-                                desired_ee_pose_world_.orientation.x,
-                                desired_ee_pose_world_.orientation.y,
-                                desired_ee_pose_world_.orientation.z);
-    qd_world.normalize();
-    Eigen::Matrix3d R_des = qd_world.toRotationMatrix();
-    // Ricostruisco R_des via quaternione normalizzato per sicurezza
-    Eigen::Quaterniond q_des(R_des);
-    if (!std::isfinite(q_des.x()) || !std::isfinite(q_des.y()) || !std::isfinite(q_des.z()) || !std::isfinite(q_des.w())) {
-        RCLCPP_ERROR(this->get_logger(), "R_des non finita (NaN/Inf). Saltando ciclo update.");
-        return;
-    }
-    q_des.normalize();
-    R_des = q_des.toRotationMatrix();
+    // - Posizione: errore lineare in world e_p = p_des - p_cur
+    const Eigen::Vector3d p_cur = ee_placement.translation();
     const Eigen::Vector3d p_des(desired_ee_pose_world_.position.x,
                                 desired_ee_pose_world_.position.y,
                                 desired_ee_pose_world_.position.z);
-
     const Eigen::Vector3d e_pos = p_des - p_cur; // world
-    // Calcolo l'errore di orientazione tramite quaternioni per garantire ortogonalità
+
+    // - Orientazione: errore angolare in world e_w = log( R_des * R_cur^T )
+    Eigen::Matrix3d R_cur = ee_placement.rotation();
+    Eigen::Quaterniond ee_des_quat(desired_ee_pose_world_.orientation.w,
+                                desired_ee_pose_world_.orientation.x,
+                                desired_ee_pose_world_.orientation.y,
+                                desired_ee_pose_world_.orientation.z);
+    ee_des_quat.normalize();
+    Eigen::Matrix3d R_des = ee_des_quat.toRotationMatrix();
     Eigen::Matrix3d R_err_world = R_des * R_cur.transpose();
-    // Ricostruisco R_err_world via quaternione normalizzato
-    Eigen::Quaterniond q_err(R_err_world);
-    if (!std::isfinite(q_err.x()) || !std::isfinite(q_err.y()) || !std::isfinite(q_err.z()) || !std::isfinite(q_err.w())) {
-        RCLCPP_ERROR(this->get_logger(), "R_err_world non finita (NaN/Inf). Saltando ciclo update.");
-        return;
-    }
-    q_err.normalize();
-    R_err_world = q_err.toRotationMatrix();
     const Eigen::Vector3d e_ang = pinocchio::log3(R_err_world); // world
 
     Eigen::Matrix<double,6,1> e6;
@@ -532,7 +502,7 @@ void ClikUamNode::update()
     {
         std::ostringstream oss_tot;
         oss_tot.setf(std::ios::fixed);
-        oss_tot << std::setprecision(5);
+        oss_tot << std::setprecision(4);
         oss_tot << "qdot_tot [rad/s] = [";
         for (int i = 0; i < qdot_ik.size(); ++i) {
             const double qdot_tot_i = qdot_ik[i] + qdot_fb[i];
