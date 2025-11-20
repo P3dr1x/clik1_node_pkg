@@ -10,7 +10,7 @@ The UAM is composed by:
   <img src="media/UAM.gif" alt="UAM">
 </div>
 
-This code for now allows to keep the end-effector at a certain pose and to track a circular trajectory.
+In this branch we employ the **simple manipulator jacobian** $[\mathbf{J}_m]$ instead of the Generalized Jacobian for solving the Inverse Kinematics.
 
 ## Prerequisites
 
@@ -84,8 +84,13 @@ ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err_x_:=50.0
 Parameter      |Default value |   Description    |
 |-------------------|---------------|------------|
 | `use_gazebo_pose` | `true` | The node will try to subscribe to the `/world/default/dynamic_pose/info` topic bridged from Gazebo to ROS2 for getting the UAV pose. 
-| `k_err_x_` | `50.0` | Is the gain value for the EE feedback 
-| `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic
+| `k_err_x_` | `20.0` | Is the gain value for the EE feedback. 
+| `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic.
+| `damping_` | `1e-4` | Damping parameter for damped pseudoinversion
+| `redundant` | `false` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
+| `control_rate_hz` | `100.0` | Frequency at which the `update()` loop of the controller node will operate.
+| `<joint_name>_weight` | `15.0`, `25.0` | Set the weight of the specific joint. This influences the weight matrix used in the weighted pseudoinversion. You can choose `shoulder`, `forearm_roll`, `wrist_rotate`.
+
 
 
 ## Usage with real system (Motion Capture)
@@ -131,15 +136,15 @@ ros2 run clik1_node_pkg planner
 
 ## Mathematics
 
-The algorithm computes in real-time the reference velocities to manipulators motors must have in order to keep the EE at the desired global pose. This is done through:
+The algorithm computes in real-time the reference velocities for manipulators motors in order to get the EE to complete the task planned through the `planner` node. This is done through:
 
-$$\dot{\mathbf{q}} = [\mathbf{J}_{\text{gen}}]^{\dagger}[\mathbf{K}]\mathbf{e}_x$$
+$$\dot{\mathbf{q}} = [\mathbf{J}_{\text{m}}]^{\dagger}(\mathbf{\nu}_{\text{e,des}}+[\mathbf{K}]\mathbf{e}_x)$$
 
 where:
 
-- $[\mathbf{J}_{\text{gen}}]$ is the **Generalized Jacobian matrix**.
+- $[\mathbf{J}_{\text{m}}]$ is the **Manipulator Jacobian matrix**.
 - $[\mathbf{K}]$ is the gain matrix. For now is simply `k_err_x_*Identity(6,6)`.
-- $\mathbf{e}_{x}$ is EE pose error vector. It is computed as $\mathbf{e}_{x} = \log_{se(3)}([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})$.
+- $\mathbf{e}_x$ is EE pose error vector. It is computed as $\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})$.
 
 For more info check the papers (please consider citing):
 
