@@ -311,14 +311,13 @@ void ClikUamNode::update()
 
     // 2. Leggi lo stato attuale dei giunti del braccio usando gli indici corretti di Pinocchio
     for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+        // Cerca il giunto nel modello di Pinocchio e aggiorna q_
         const auto& joint_name = current_joint_state_.name[i];
-        if (!model_.existJointName(joint_name)) continue;
-        const pinocchio::JointIndex jid = model_.getJointId(joint_name);
-        const int idx_q = static_cast<int>(model_.joints[jid].idx_q());
-        const int nq_j = static_cast<int>(model_.joints[jid].nq());
-        if (nq_j == 1) {
-            if (idx_q >= 0 && idx_q < static_cast<int>(model_.nq)) {
-                q_[idx_q] = current_joint_state_.position[i];
+        if (model_.existJointName(joint_name)) {
+            pinocchio::JointIndex joint_idx = model_.getJointId(joint_name);
+            int joint_idx_int = static_cast<int>(joint_idx);
+            if (joint_idx_int > 1 && (joint_idx_int - 2 + 7) < model_.nq) {
+                q_[joint_idx_int - 2 + 7] = current_joint_state_.position[i];
             }
         }
     }
