@@ -89,7 +89,7 @@ Parameter      |Default value |   Description    |
 | `damping_` | `1e-4` | Damping parameter for damped pseudoinversion
 | `redundant` | `false` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
 | `control_rate_hz` | `100.0` | Frequency at which the `update()` loop of the controller node will operate.
-| `<joint_name>_weight` | `15.0`, `25.0` | Set the weight of the specific joint. This influences the weight matrix used in the weighted pseudoinversion. You can choose `shoulder`, `forearm_roll`, `wrist_rotate`.
+| `<joint_name>_weight` | `15.0`, `25.0` | Set the weight of the specific joint. This influences the weight matrix used in the weighted pseudoinversion. You can choose `shoulder`, `forearm_roll`, `wrist_rotate` joints.
 
 
 ## Usage with real system (Motion Capture)
@@ -144,7 +144,7 @@ where:
 - $[\mathbf{J}_{\text{gen}}]$ is the **Generalized Jacobian matrix**.
 - $\mathbf{\nu}_{\text{e,des}}$ is the EE desired twist
 - $[\mathbf{K}]$ is the gain matrix. For now is simply `k_err_x_*Identity(6,6)`.
-- $\mathbf{e}_{x}$ is EE task-space error vector. It is computed as $\mathbf{e}_{x} = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})$.
+- $\mathbf{e}_x$ is EE task-space error vector. It is computed as $\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})$.
 
 For more info check the papers (please consider citing):
 
