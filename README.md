@@ -144,7 +144,7 @@ where:
 - $[\mathbf{J}_{\text{gen}}]$ is the **Generalized Jacobian matrix**.
 - $\mathbf{\nu}_{\text{e,des}}$ is the EE desired twist
 - $[\mathbf{K}]$ is the gain matrix. For now is simply `k_err_x_*Identity(6,6)`.
-- $\mathbf{e}_x$ is EE task-space error vector. It is computed as $\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})$.
+- $`\mathbf{e}_x`$ is EE task-space error vector. It is computed as $`\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})`$.
 
 For more info check the papers (please consider citing):
 
