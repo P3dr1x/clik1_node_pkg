@@ -1,0 +1,6 @@
+In questa branch vorrei sviluppare ulteriormente il codice che permette il controllo del manipolatore aereo tramite lo jacobiano generalizzato.
+
+Voglio prendere come riferimento la legge di controllo presentata nella sezione 3.1 di Paper_MP.pdf.
+
+- Come prima cosa vorrei che non usassi più le matrici di inerzia Hb,Hm per il calcolo dello jacobiano generalizazto ma le matrici
+Ab e Am che vengono dall'uso di pinocchio::computeCentroidalMap, proprio come in clik2_node_pkg/src/clik_uam_node. 

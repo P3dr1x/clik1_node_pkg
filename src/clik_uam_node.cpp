@@ -10,6 +10,7 @@
 #include "pinocchio/algorithm/frames.hpp"
 #include "pinocchio/algorithm/kinematics.hpp"
 #include "pinocchio/algorithm/crba.hpp" // Composite Rigid Body Algorithm (per inerzia)
+#include "pinocchio/algorithm/centroidal.hpp" // Centroidal Momentum Matrix (Ag)
 #include "pinocchio/spatial/se3.hpp" // per SE3 log6
 #include "pinocchio/spatial/explog.hpp" // per log3 su SO(3)
 #include "trajectory_msgs/msg/joint_trajectory_point.hpp"
@@ -356,25 +357,27 @@ void ClikUamNode::update()
 
     const pinocchio::SE3& ee_placement = data_.oMf[ee_frame_id_];
 
-    // 3. CALCOLO MATRICI INERZIA E JACOBIANI 
-
-    pinocchio::crba(model_, data_, q_);
-    data_.M.triangularView<Eigen::StrictlyLower>() = data_.M.transpose().triangularView<Eigen::StrictlyLower>();
-    inertia_matrix_ = data_.M;
+    // 3. CALCOLO JACOBIANI E CMM (Centroidal Momentum Matrix)
 
     // Jacobiano del frame in LOCAL_WORLD_ALIGNED
     // RIC: il vettore velocità desiderata ha convenzione [lin; ang]
     pinocchio::computeFrameJacobian(model_, data_, q_, ee_frame_id_, pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED, J_);
 
-    // Estrai i blocchi necessari
-    Eigen::MatrixXd H_b = inertia_matrix_.topLeftCorner(6, 6);
-    Eigen::MatrixXd H_bm = inertia_matrix_.topRightCorner(6, model_.nv - 6);
+    // Calcolo della Centroidal Momentum Matrix Ag(q)
+    // Ag è 6 x nv e si partiziona in [Ab | Am], con Ab=Ag(:,0:5), Am=Ag(:,6:nv-1)
+    pinocchio::computeCentroidalMap(model_, data_, q_);
+    const Eigen::MatrixXd &Ag = data_.Ag; // 6 x nv
+    Eigen::MatrixXd Ab = Ag.leftCols(6);                     // 6 x 6
+    Eigen::MatrixXd Am = Ag.rightCols(model_.nv - 6);        // 6 x (nv-6)
+
+    // Estrai i blocchi del Jacobiano dell'EE
     Eigen::MatrixXd J_b = J_.leftCols(6);
     Eigen::MatrixXd J_m = J_.rightCols(model_.nv - 6);
 
-    // 4. CALCOLO JACOBIANO GENERALIZZATO
-    Eigen::MatrixXd Hb_inv_Hbm = H_b.ldlt().solve(H_bm); // risolve H_b * X = H_bm
-    Jgen_ = J_m - J_b * Hb_inv_Hbm;
+    // 4. CALCOLO JACOBIANO GENERALIZZATO tramite Ab, Am (Paper_MP Sec. 3.1)
+    // Jgen = J_m - J_b * Ab^{-1} * Am
+    Eigen::MatrixXd Ab_inv_Am = Ab.ldlt().solve(Am); // risolve Ab * X = Am
+    Jgen_ = J_m - J_b * Ab_inv_Am;
 
     // Seleziona le colonne del Jacobiano generalizzato corrispondenti ai soli giunti del braccio
     const int n_arm = static_cast<int>(arm_joints_.size());
