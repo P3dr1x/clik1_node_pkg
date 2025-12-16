@@ -10,8 +10,6 @@ The UAM is composed by:
   <img src="media/UAM.gif" alt="UAM">
 </div>
 
-This code for now allows to keep the end-effector at a certain pose and to track a circular trajectory.
-
 ## Prerequisites
 
 1) First you need to have followed all [the steps](https://docs.trossenrobotics.com/interbotix_xsarms_docs/ros_interface/ros2/software_setup.html#amd64-architecture) for having the `interbotix_ws` in your machine.
