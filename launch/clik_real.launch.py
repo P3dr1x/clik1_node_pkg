@@ -34,7 +34,7 @@ def generate_launch_description():
     #robot_description = LaunchConfiguration('robot_description', default='')
 
     # Micro XRCE Agent args (PX4 → ROS 2 bridge over serial)
-    px4_agent_dev = LaunchConfiguration('px4_agent_dev', default='/dev/USB1')
+    px4_agent_dev = LaunchConfiguration('px4_agent_dev', default='/dev/ttyUSB1')
     px4_agent_baud = LaunchConfiguration('px4_agent_baud', default='921600')
 
     # Paths to models
@@ -151,7 +151,7 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_name', default_value='mobile_wx250s', description='Nome del robot.'),
         DeclareLaunchArgument('xs_driver_logging_level', default_value='INFO', choices=['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'], description='Livello di log del driver XS.'),
         DeclareLaunchArgument('real_system', default_value='true', choices=['true','false'], description='Se true avvia il nodo real_drone_pose_pub e il broadcaster usa la posa reale.'),
-        DeclareLaunchArgument('px4_agent_dev', default_value='/dev/USB1', description='Dispositivo seriale PX4 (es. /dev/ttyACM0, /dev/USB1).'),
+        DeclareLaunchArgument('px4_agent_dev', default_value='/dev/ttyUSB1', description='Dispositivo seriale PX4 (es. /dev/ttyACM0, /dev/ttyUSB1).'),
         DeclareLaunchArgument('px4_agent_baud', default_value='921600', description='Baudrate per MicroXRCEAgent.'),
         # Be sure that MicroXRCEAgent is exposing PX4 topic on ROS2
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false'], description='Lancia RViz se true.'),
