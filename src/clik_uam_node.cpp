@@ -135,6 +135,9 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // Opzione per sfruttare ridondanza cinematica: segui solo la traiettoria di posizione (ignora orientazione)
     this->declare_parameter<bool>("redundant", false);
     redundant_ = this->get_parameter("redundant").as_bool();
+    // Parametro per abilitare la null-space velocity qd_N = qd(k-1)
+    this->declare_parameter<bool>("qd_N_prev", false);
+    qd_N_prev_ = this->get_parameter("qd_N_prev").as_bool();
     k_err_x_ = get_parameter("k_err_x_").as_double();
     damping_ = get_parameter("damping").as_double();
     double shoulder_w = get_parameter("shoulder_weight").as_double();
@@ -148,6 +151,9 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
         else if (jn == "wrist_rotate") W_diag_[static_cast<Eigen::Index>(i)] = wrist_w;
         else W_diag_[static_cast<Eigen::Index>(i)] = 1.0;
     }
+    // Inizializza vettore delle velocità precedenti dei giunti del braccio
+    qd_prev_arm_.resize(static_cast<int>(arm_joints_.size()));
+    qd_prev_arm_.setZero();
 
     // Precalcolo una tantum: indici di velocità e limiti di velocità per i giunti del braccio
     {
@@ -459,6 +465,7 @@ void ClikUamNode::update()
     // qdot_ik = Jgen^+ * v_ff, qdot_fb = Jgen^+ * (K * errore)
     Eigen::VectorXd qdot_ik;
     Eigen::VectorXd qdot_fb;
+    Eigen::VectorXd qdot_ns; // null-space velocity
     // Costruisci matrice di peso inverso W^{-1}
     Eigen::VectorXd W_inv_vec = W_diag_.cwiseInverse();
     Eigen::MatrixXd W_inv = W_inv_vec.asDiagonal(); // n_arm x n_arm
@@ -474,6 +481,13 @@ void ClikUamNode::update()
         Eigen::Vector3d v_des_pos = desired_ee_velocity_vec_.head<3>();
         qdot_ik = Pinv * v_des_pos;                      // n_arm x 1
         qdot_fb = Pinv * (k_err_x_ * e_pos);             // n_arm x 1
+        // Null-space projector N = I - J# J, con J# = Pinv
+        if (qd_N_prev_) {
+            Eigen::MatrixXd N = Eigen::MatrixXd::Identity(n_arm, n_arm) - Pinv * Jgen_lin;
+            qdot_ns = N * qd_prev_arm_;
+        } else {
+            qdot_ns = Eigen::VectorXd::Zero(n_arm);
+        }
     } else {
         // Caso non ridondante: usa l'intero Jacobiano generalizzato Jgen_ (6 x n_arm)
         // A = Jgen * W^{-1} * Jgen^T
@@ -483,20 +497,28 @@ void ClikUamNode::update()
         Eigen::MatrixXd Pinv = W_inv * Jgen_arm.transpose() * Ainv; // n_arm x 6
         qdot_ik = Pinv * desired_ee_velocity_vec_;               // n_arm x 1 (feed-forward)
         qdot_fb = Pinv * (k_err_x_ * e6);                        // n_arm x 1 (feedback pose intera)
+        // Null-space projector N = I - J# J, con J# = Pinv
+        if (qd_N_prev_) {
+            Eigen::MatrixXd N = Eigen::MatrixXd::Identity(n_arm, n_arm) - Pinv * Jgen_arm;
+            qdot_ns = N * qd_prev_arm_;
+        } else {
+            qdot_ns = Eigen::VectorXd::Zero(n_arm);
+        }
     }
 
     // Saturazione delle velocità dei giunti in base ai limiti URDF (per-giunto)
-    // Applico la saturazione sul contributo totale qdot_tot = qdot_ik + qdot_fb,
-    // ridistribuendo proporzionalmente su entrambi i termini per preservarne il rapporto.
+    // Applico la saturazione sul contributo totale qdot_tot = qdot_ik + qdot_fb + qdot_ns,
+    // ridistribuendo proporzionalmente su tutti i termini per preservarne il rapporto.
     for (int i = 0; i < n_arm; ++i) {
         const double vmax_i = v_max_[i];
         if (vmax_i > 0.0) {
-            const double qdot_tot_i = qdot_ik[i] + qdot_fb[i];
+            const double qdot_tot_i = qdot_ik[i] + qdot_fb[i] + qdot_ns[i];
             const double abs_tot = std::abs(qdot_tot_i);
             if (abs_tot > vmax_i) {
                 const double s = vmax_i / abs_tot; // 0 < s < 1
                 qdot_ik[i] *= s;
                 qdot_fb[i] *= s;
+                qdot_ns[i] *= s;
             }
         }
     }
@@ -508,7 +530,7 @@ void ClikUamNode::update()
         oss_tot << std::setprecision(4);
         oss_tot << "qdot_tot [rad/s] = [";
         for (int i = 0; i < qdot_ik.size(); ++i) {
-            const double qdot_tot_i = qdot_ik[i] + qdot_fb[i];
+            const double qdot_tot_i = qdot_ik[i] + qdot_fb[i] + qdot_ns[i];
             oss_tot << qdot_tot_i << (i + 1 < qdot_ik.size() ? ", " : "");
         }
         oss_tot << "]";
@@ -537,10 +559,12 @@ void ClikUamNode::update()
         q_ik = q_arm_from_q; // inizializza o reinizializza con misurato corrente
         delta_q = Eigen::VectorXd::Zero(n_arm);
         ff_fb_initialized = true;
+        // resetta le velocità precedenti per evitare salti dopo timeout
+        qd_prev_arm_.setZero();
     }
 
-    // Integrazione separata
-    q_ik    = q_ik    + qdot_ik * dt;      // cinematica inversa prevista
+    // Integrazione separata (aggiungi la componente in nullo alla parte feed-forward)
+    q_ik    = q_ik    + (qdot_ik + qdot_ns) * dt;      // cinematica inversa prevista + null-space
     delta_q = delta_q + qdot_fb * dt;      // correzione di feedback accumulata
 
     // Configurazione da comandare: q_cmd = q_ik + delta_q
@@ -584,6 +608,11 @@ void ClikUamNode::update()
     } else {
         if (arm_controller_pub_) arm_controller_pub_->publish(command_msg);
     }
+
+    // Aggiorna lo stato delle velocità precedenti dei giunti del braccio per la prossima iterazione
+    Eigen::VectorXd qdot_tot(n_arm);
+    for (int i = 0; i < n_arm; ++i) qdot_tot[i] = qdot_ik[i] + qdot_fb[i] + qdot_ns[i];
+    qd_prev_arm_ = qdot_tot;
 
 }
 

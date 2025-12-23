@@ -109,6 +109,8 @@ private:
     bool real_system_ = true;
     // Se true, ignora l'orientazione e usa solo la parte traslazionale (prime 3 righe del Jacobiano)
     bool redundant_ = false;
+    // Se true, usa qd(k-1) proiettata nel nullo di Jgen come null-space velocity
+    bool qd_N_prev_ = false;
     // Damping per pseudoinversa pesata (Tikhonov)
     double damping_ = 0.0;
     // Integrazione comandi posizione giunti braccio a frequenza di controllo
