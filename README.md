@@ -1,6 +1,6 @@
 # Velocity-Level CLIK of UAMs
 
-This is the code for a ROS2 controller node that computes the Closed-Loop Inverse Kinematics (CLIK) of the Unmanned Aerial Manipulator (UAM) of the Department of Industrial Engineering of University of Padova (UniPD). It works for ROS2 Humble (Ubuntu 22.04).
+This is the code of a ROS2 controller node for the Unmanned Aerial Manipulator (UAM) of the Department of Industrial Engineering of University of Padova (UniPD). It works for ROS2 Humble (Ubuntu 22.04).
 
 The UAM is composed by:
 - A custom hexarotor platform assembled at DII with Tarot T960 frame. The UAV mounts a Pixhawk 6C autopilot with PX4 v1.15.2 installed.
@@ -22,6 +22,14 @@ The UAM is composed by:
 sudo apt install ros-$ROS_DISTRO-pinocchio
 sudo apt-get install ros-${ROS_DISTRO}-kinematics-interface-pinocchio
 ```
+
+4. You need also to have a **QP solver** installed on your system. Here [OSQP](https://osqp.org/) was chosen. In order to install it follow [the instructions in the doc](https://osqp.org/docs/release-0.6.3/get_started/sources.html). At the moment only [v0.6.3](https://github.com/osqp/osqp/tree/v0.6.3) works. So be sure to build the right version:
+
+```bash
+git clone --recursive https://github.com/osqp/osqp
+git switch v0.6.3
+```
+5. Then you need to install the **C++ wrapper for OSQP**. Follow the instructions at [this link](https://github.com/gbionics/osqp-eigen#%EF%B8%8F-build-from-source-advanced).
 
 ## Installation
 
@@ -66,7 +74,7 @@ If no or invalid input is given by the user, the desired relative EE pose comman
 For running the controller 
 
 ```bash
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err_x_:=50.0
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p kp_pos:=50.0
 ```
 
 
@@ -82,7 +90,7 @@ ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err_x_:=50.0
 Parameter      |Default value |   Description    |
 |-------------------|---------------|------------|
 | `use_gazebo_pose` | `true` | The node will try to subscribe to the `/world/default/dynamic_pose/info` topic bridged from Gazebo to ROS2 for getting the UAV pose. 
-| `k_err_x_` | `20.0` | Is the gain value for the EE feedback. 
+| `kp_pos`, `kp_ori` | `20.0` | Are the gain value for the EE feedback. 
 | `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic.
 | `damping_` | `1e-4` | Damping parameter for damped pseudoinversion
 | `redundant` | `false` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
@@ -133,15 +141,22 @@ ros2 run clik1_node_pkg planner
 
 ## Mathematics
 
-The algorithm computes in real-time the reference velocities for manipulators motors in order to get the EE to complete the task planned through the `planner` node. This is done through:
+The algorithm computes in real-time the reference velocities for manipulators motors in order to get the EE to complete the task planned through the `planner` node. This is done solving a QP problem at each timestep:
 
-$$\dot{\mathbf{q}} = [\mathbf{J}_{\text{gen}}]^{\dagger}(\mathbf{\nu}_{\text{e,des}}+[\mathbf{K}]\mathbf{e}_x)$$
+$$\dot{\mathbf{q}} = \text{argmin} \| [\mathbf{J}_{\text{gen}}]\dot{\mathbf{q}}-\mathbf{\nu}_{\text{e,des}} \|$$
+
+$$
+\text{s.t. }\quad
+\begin{cases}
+\dot{\mathbf{q}}_{\min}\le \dot{\mathbf{q}}  \le \dot{\mathbf{q}}_{\max} \\
+\dfrac{\dot{\mathbf{q}}_{\min}-q}{\Delta t}\le \dot{\mathbf{q}} \le \dfrac{\dot{\mathbf{q}}_{\max}-q}{\Delta t}
+\end{cases}$$
 
 where:
 
 - $[\mathbf{J}_{\text{gen}}]$ is the **Generalized Jacobian matrix**.
-- $\mathbf{\nu}_{\text{e,des}}$ is the EE desired twist
-- $[\mathbf{K}]$ is the gain matrix. For now is simply `k_err_x_*Identity(6,6)`.
+- $\mathbf{\nu}_{\text{e,des}}=\mathbf{\nu}_{\text{e,ref}}+[\mathbf{K}]\mathbf{e}_x$ is the EE desired twist
+- $[\mathbf{K}]$ is the gain matrix.
 - $`\mathbf{e}_x`$ is EE task-space error vector. It is computed as $`\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})`$.
 
 For more info check the papers (please consider citing):
