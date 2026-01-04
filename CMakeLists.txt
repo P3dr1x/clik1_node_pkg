@@ -40,6 +40,9 @@ foreach(Dependency IN ITEMS ${CONTROLLER_INCLUDE_DEPENDS})
   find_package(${Dependency} REQUIRED)
 endforeach()
 
+# OSQP-Eigen (QP solver wrapper)
+find_package(OsqpEigen REQUIRED)
+
 add_executable(clik_uam_node src/clik_uam_node.cpp)
 # Specifico quali librerie importate servono perchè il nodo funzioni 
 ament_target_dependencies(clik_uam_node
@@ -60,7 +63,7 @@ target_include_directories(clik_uam_node PUBLIC
 )
 
 # Collega esplicitamente la libreria Eigen (FONDAMENTALE)
-target_link_libraries(clik_uam_node Eigen3::Eigen)
+target_link_libraries(clik_uam_node Eigen3::Eigen OsqpEigen::OsqpEigen)
 
 install(TARGETS
   clik_uam_node

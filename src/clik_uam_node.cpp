@@ -1,31 +1,22 @@
 #include "clik1_node_pkg/clik_uam_node.hpp"
-#include <iostream>
-#include <vector>
-#include <string>
+
+// Standard library (implementation-only)
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <exception>
+#include <iomanip>
+#include <limits>
 #include <sstream>
-#include <memory>
-#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include <functional>
+
 #include "pinocchio/parsers/urdf.hpp"
 #include "pinocchio/algorithm/jacobian.hpp"
 #include "pinocchio/algorithm/frames.hpp"
 #include "pinocchio/algorithm/kinematics.hpp"
-#include "pinocchio/algorithm/crba.hpp" // Composite Rigid Body Algorithm (per inerzia)
 #include "pinocchio/algorithm/centroidal.hpp" // Centroidal Momentum Matrix (Ag)
-#include "pinocchio/spatial/se3.hpp" // per SE3 log6
 #include "pinocchio/spatial/explog.hpp" // per log3 su SO(3)
-#include "trajectory_msgs/msg/joint_trajectory_point.hpp"
-#include "interbotix_xs_msgs/msg/joint_group_command.hpp" // Include necessario per il nuovo tipo di messaggio
-#include "px4_ros_com/frame_transforms.h"
 #include "ament_index_cpp/get_package_share_directory.hpp"
-#include "std_msgs/msg/float64_multi_array.hpp"
-#include "geometry_msgs/msg/pose_array.hpp"
-#include "geometry_msgs/msg/pose_stamped.hpp"
-#include "tf2_ros/transform_broadcaster.h"
-#include <Eigen/SVD>
-#include <Eigen/Dense>
-#include <iomanip>
-#include <algorithm>
-#include <chrono>
 
 
 ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()), tf_listener_(tf_buffer_)
@@ -117,17 +108,22 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // Allocazioni
     q_.resize(model_.nq);
     q_.setZero();
-    qd_.resize(model_.nv);
-    qd_.setZero();
-    inertia_matrix_.resize(model_.nv, model_.nv);
     J_.resize(6, model_.nv);
     Jgen_.resize(6, model_.nv - 6);
-    error_pose_ee_.resize(6);
     desired_ee_velocity_vec_.resize(6);
     desired_ee_velocity_vec_.setZero();
+    // Giunti controllati dal controller (gruppo "arm").
+    // Eventuali giunti del gripper vengono comunque letti da /joint_states e aggiornano q_,
+    // ma NON sono variabili del QP e NON vengono comandati.
     arm_joints_ = {"waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"}; // in future they might be specified through yaml file
-    declare_parameter("k_err_x_", 20.0); // guadagno posizione traslazionale
+
+    declare_parameter("k_err_x_", 20.0); // legacy (tenuto per compatibilità)
+    declare_parameter("kp_pos", 20.0);
+    declare_parameter("kp_ori", 20.0);
     declare_parameter("damping", 1e-4);   // damping per pseudoinversa (Tikhonov)
+    declare_parameter("qp_lambda_reg", 1e-4);
+    declare_parameter("qp_vel_max_default", 2.0);
+    declare_parameter("qp_eps_ab", 1e-9);
     // Parametri opzionali per pesi (spalla, forearm_roll, wrist_rotate hanno peso maggiore).
     declare_parameter("shoulder_weight", 15.0);
     declare_parameter("forearm_weight", 25.0);
@@ -137,9 +133,10 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     redundant_ = this->get_parameter("redundant").as_bool();
     // Parametro per abilitare la null-space velocity qd_N = qd(k-1)
     this->declare_parameter<bool>("qd_N_prev", false);
-    qd_N_prev_ = this->get_parameter("qd_N_prev").as_bool();
-    k_err_x_ = get_parameter("k_err_x_").as_double();
-    damping_ = get_parameter("damping").as_double();
+    kp_pos_ = get_parameter("kp_pos").as_double();
+    kp_ori_ = get_parameter("kp_ori").as_double();
+    qp_lambda_reg_ = get_parameter("qp_lambda_reg").as_double();
+    qp_vel_max_default_ = get_parameter("qp_vel_max_default").as_double();
     double shoulder_w = get_parameter("shoulder_weight").as_double();
     double forearm_w = get_parameter("forearm_weight").as_double();
     double wrist_w = get_parameter("wrist_weight").as_double();
@@ -151,16 +148,11 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
         else if (jn == "wrist_rotate") W_diag_[static_cast<Eigen::Index>(i)] = wrist_w;
         else W_diag_[static_cast<Eigen::Index>(i)] = 1.0;
     }
-    // Inizializza vettore delle velocità precedenti dei giunti del braccio
-    qd_prev_arm_.resize(static_cast<int>(arm_joints_.size()));
-    qd_prev_arm_.setZero();
-
-    // Precalcolo una tantum: indici di velocità e limiti di velocità per i giunti del braccio
+    // Precalcolo una tantum: indici di velocità e posizione per i giunti del braccio
     {
         const int n_arm = static_cast<int>(arm_joints_.size());
         idx_v_arm_.resize(n_arm);
         idx_q_arm_.resize(n_arm);
-        v_max_.resize(n_arm);
         for (int i = 0; i < n_arm; ++i) {
             const std::string &jname = arm_joints_[static_cast<size_t>(i)];
             if (!model_.existJointName(jname)) {
@@ -186,27 +178,93 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
                 return;
             }
             idx_q_arm_[i] = idx_q;
-            if (idx_v >= 0 && idx_v < model_.velocityLimit.size()) {
-                v_max_[i] = model_.velocityLimit[static_cast<Eigen::Index>(idx_v)];
+        }
+    }
+
+    // Pre-estrazione limiti di posizione/velocità (ordine arm_joints_)
+    {
+        const int n_arm = static_cast<int>(arm_joints_.size());
+        q_lower_arm_.resize(n_arm);
+        q_upper_arm_.resize(n_arm);
+        v_limit_arm_.resize(n_arm);
+        q_lower_arm_.setZero();
+        q_upper_arm_.setZero();
+        v_limit_arm_.setZero();
+
+        have_position_limits_ = (model_.lowerPositionLimit.size() == static_cast<Eigen::Index>(model_.nq)) &&
+                               (model_.upperPositionLimit.size() == static_cast<Eigen::Index>(model_.nq));
+        have_velocity_limits_ = (model_.velocityLimit.size() == static_cast<Eigen::Index>(model_.nv));
+
+        for (int i = 0; i < n_arm; ++i) {
+            const int iq = idx_q_arm_[i];
+            const int iv = idx_v_arm_[i];
+            if (have_position_limits_) {
+                q_lower_arm_[i] = model_.lowerPositionLimit[static_cast<Eigen::Index>(iq)];
+                q_upper_arm_[i] = model_.upperPositionLimit[static_cast<Eigen::Index>(iq)];
             } else {
-                v_max_[i] = 0.0; // 0 -> nessun limite applicato a runtime
+                q_lower_arm_[i] = -std::numeric_limits<double>::infinity();
+                q_upper_arm_[i] = +std::numeric_limits<double>::infinity();
+            }
+            if (have_velocity_limits_) {
+                v_limit_arm_[i] = model_.velocityLimit[static_cast<Eigen::Index>(iv)];
+            } else {
+                v_limit_arm_[i] = 0.0;
             }
         }
-        // Log una tantum dei limiti
-        std::ostringstream oss;
-        oss.setf(std::ios::fixed);
-        oss << std::setprecision(3);
-        oss << "v_max [rad/s] precomputati = [";
-        for (int i = 0; i < n_arm; ++i) {
-            oss << v_max_[i];
-            if (i + 1 < n_arm) oss << ", ";
+    }
+
+    // Setup QP (matrici con sparsità fissa). Il solver viene inizializzato una sola volta.
+    {
+        qp_n_ = static_cast<int>(arm_joints_.size());
+
+        // Work buffers
+        qp_gradient_.resize(qp_n_);
+        qp_l_.resize(qp_n_);
+        qp_u_.resize(qp_n_);
+        qp_solution_.resize(qp_n_);
+        qp_solution_.setZero();
+        qp_q_arm_meas_.resize(qp_n_);
+        qp_q_arm_meas_.setZero();
+
+        qp_P_dense_.resize(qp_n_, qp_n_);
+        qp_P_dense_.setZero();
+        qp_J_task_.resize(6, qp_n_);
+        qp_J_task_.setZero();
+        qp_v_task_.resize(6);
+        qp_v_task_.setZero();
+
+        // A = I (box constraints)
+        qp_A_.resize(qp_n_, qp_n_);
+        qp_A_.setIdentity();
+        qp_A_.makeCompressed();
+
+        // Hessian sparsity: full upper-triangular pattern
+        qp_hessian_.resize(qp_n_, qp_n_);
+        qp_hessian_.reserve(Eigen::Index(qp_n_ * (qp_n_ + 1) / 2));
+        std::vector<Eigen::Triplet<double>> triplets;
+        triplets.reserve(static_cast<size_t>(qp_n_ * (qp_n_ + 1) / 2));
+        for (int j = 0; j < qp_n_; ++j) {
+            for (int i = 0; i <= j; ++i) {
+                triplets.emplace_back(i, j, (i == j) ? qp_lambda_reg_ : 0.0);
+            }
         }
-        oss << "]";
-        RCLCPP_INFO(this->get_logger(), "%s", oss.str().c_str());
+        qp_hessian_.setFromTriplets(triplets.begin(), triplets.end());
+        qp_hessian_.makeCompressed();
+
+        // OSQP-Eigen data
+        qp_solver_.settings()->setVerbosity(false);
+        qp_solver_.settings()->setWarmStart(true);
+        qp_solver_.settings()->setPolish(false);
+        qp_solver_.data()->setNumberOfVariables(qp_n_);
+        qp_solver_.data()->setNumberOfConstraints(qp_n_);
+        qp_solver_.data()->setLinearConstraintsMatrix(qp_A_);
+
+        // (H, g, l, u) verranno settati al primo ciclo utile quando dt e q sono validi
+        qp_initialized_ = false;
     }
 
     // Timer di update() controllo parametrico
-    this->declare_parameter<double>("control_rate_hz", 80.0);
+    this->declare_parameter<double>("control_rate_hz", 100.0);
     double rate_hz = this->get_parameter("control_rate_hz").as_double();
     rate_hz = std::max(1.0, rate_hz); // salvaguardia: minimo 1 Hz
     const auto period_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -355,7 +413,6 @@ void ClikUamNode::update()
     pinocchio::normalize(model_, q_);
 
     // Velocità generalizzate: assumiamo base ferma (hovering) -> prime 6 componenti zero
-    //qd_.setZero();
 
     // Cinematica diretta per posa assoluta dell'end-effector
     pinocchio::forwardKinematics(model_, data_, q_);
@@ -426,16 +483,6 @@ void ClikUamNode::update()
                                     desired_ee_velocity_world_.angular.z;
     }
 
-    // Converti pose in SE3 di Pinocchio
-    pinocchio::SE3 desired_pose_se3(
-        pinocchio::SE3::Quaternion(desired_ee_pose_world_.orientation.w, desired_ee_pose_world_.orientation.x, desired_ee_pose_world_.orientation.y, desired_ee_pose_world_.orientation.z),
-        Eigen::Vector3d(desired_ee_pose_world_.position.x, desired_ee_pose_world_.position.y, desired_ee_pose_world_.position.z)
-    );
-    pinocchio::SE3 current_pose_se3(
-        pinocchio::SE3::Quaternion(current_ee_pose_world.orientation.w, current_ee_pose_world.orientation.x, current_ee_pose_world.orientation.y, current_ee_pose_world.orientation.z),
-        Eigen::Vector3d(current_ee_pose_world.position.x, current_ee_pose_world.position.y, current_ee_pose_world.position.z)
-    );
-
     // 6. CALCOLO ERRORE POSE END-EFFECTOR
 
     // - Posizione: errore lineare in world e_p = p_des - p_cur
@@ -456,124 +503,150 @@ void ClikUamNode::update()
     Eigen::Matrix3d R_err_world = R_des * R_cur.transpose();
     const Eigen::Vector3d e_ang = pinocchio::log3(R_err_world); // world
 
-    Eigen::Matrix<double,6,1> e6;
-    e6.head<3>() = e_pos;
-    e6.tail<3>() = e_ang;
+    // 7. QP-based control (OSQP-Eigen) - formula identica al prototipo Python
+    // Decision variable: x = qdot_arm (size n_arm)
+    // Cost:
+    //   P = J_task^T * W * J_task + lambda_reg * I  (W = I)
+    //   q = - J_task^T * W * v_task
+    // Constraints (box): l <= x <= u, con A = I
+    //   dq_min <= x <= dq_max
+    //   (q_min - q_arm)/dt <= x <= (q_max - q_arm)/dt
+    // Intersezione bounds velocità e bounds di posizione (via dt).
 
-    // 7. CALCOLO DELLA VELOCITÀ DEI GIUNTI TRAMITE INVERSIONE PESATA DELLO JACOBIANO GENERALIZZATO
-    // Separazione feed-forward (q_ik) e feedback (delta_q) in spazio giunti
-    // qdot_ik = Jgen^+ * v_ff, qdot_fb = Jgen^+ * (K * errore)
-    Eigen::VectorXd qdot_ik;
-    Eigen::VectorXd qdot_fb;
-    Eigen::VectorXd qdot_ns; // null-space velocity
-    // Costruisci matrice di peso inverso W^{-1}
-    Eigen::VectorXd W_inv_vec = W_diag_.cwiseInverse();
-    Eigen::MatrixXd W_inv = W_inv_vec.asDiagonal(); // n_arm x n_arm
+    const rclcpp::Time now = this->now();
+    double dt = (now - last_update_time_).seconds();
+    last_update_time_ = now;
+    dt = std::clamp(dt, 1e-4, 0.02); // evita divisione per 0, max 20ms
 
-    if (redundant_) {
-        // Ridondante: usa solo prime 3 righe di Jgen_ (convenzione richiesta) -> Jgen_lin
-        Eigen::MatrixXd Jgen_lin = Jgen_arm.topRows(3); // 3 x n_arm
-        // A = J * W^{-1} * J^T
-        Eigen::MatrixXd A = Jgen_lin * W_inv * Jgen_lin.transpose(); // 3x3
-        Eigen::MatrixXd Areg = A + damping_ * Eigen::MatrixXd::Identity(A.rows(), A.cols());
-        Eigen::MatrixXd Ainv = Areg.ldlt().solve(Eigen::MatrixXd::Identity(A.rows(), A.cols()));
-        Eigen::MatrixXd Pinv = W_inv * Jgen_lin.transpose() * Ainv; // n_arm x 3
-        Eigen::Vector3d v_des_pos = desired_ee_velocity_vec_.head<3>();
-        qdot_ik = Pinv * v_des_pos;                      // n_arm x 1
-        qdot_fb = Pinv * (k_err_x_ * e_pos);             // n_arm x 1
-        // Null-space projector N = I - J# J, con J# = Pinv
-        if (qd_N_prev_) {
-            Eigen::MatrixXd N = Eigen::MatrixXd::Identity(n_arm, n_arm) - Pinv * Jgen_lin;
-            qdot_ns = N * qd_prev_arm_;
-        } else {
-            qdot_ns = Eigen::VectorXd::Zero(n_arm);
+    // Stato misurato giunti (ordine arm_joints_) - buffer preallocato
+    qp_q_arm_meas_.setZero();
+    for (int i = 0; i < n_arm; ++i) {
+        const int iq = idx_q_arm_[i];
+        if (iq >= 0 && iq < q_.size()) qp_q_arm_meas_[i] = q_[iq];
+    }
+
+    // Task selection (3D position-only se redundant_)
+    const int task_dim = redundant_ ? 3 : 6;
+    qp_J_task_.topRows(task_dim) = redundant_ ? Jgen_arm.topRows(3) : Jgen_arm;
+
+    // v_ee_des = v_ref + Kp*e  (Kp separati pos/orient)
+    qp_v_task_.setZero();
+    qp_v_task_.head<3>() = desired_ee_velocity_vec_.head<3>() + kp_pos_ * e_pos;
+    qp_v_task_.tail<3>() = desired_ee_velocity_vec_.tail<3>() + kp_ori_ * e_ang;
+
+    // Viste (no alloc) ridotte a task_dim
+    const auto J_task = qp_J_task_.topRows(task_dim);
+    const auto v_task = qp_v_task_.head(task_dim);
+
+    // P_dense = J^T J + lambda I (W = I)
+    qp_P_dense_.noalias() = J_task.transpose() * J_task;
+    qp_P_dense_.diagonal().array() += qp_lambda_reg_;
+    // Symmetrize numerically
+    qp_P_dense_ = 0.5 * (qp_P_dense_ + qp_P_dense_.transpose());
+
+    // gradient = -J^T v
+    qp_gradient_.noalias() = -J_task.transpose() * v_task;
+
+    // Bounds l/u
+    for (int i = 0; i < n_arm; ++i) {
+        double vlim = 0.0;
+        if (have_velocity_limits_) vlim = v_limit_arm_[i];
+        if (!(vlim > 0.0)) vlim = qp_vel_max_default_;
+        const double dq_min = -std::abs(vlim);
+        const double dq_max =  std::abs(vlim);
+
+        double l_i = dq_min;
+        double u_i = dq_max;
+        if (have_position_limits_ && std::isfinite(q_lower_arm_[i]) && std::isfinite(q_upper_arm_[i])) {
+            const double l_pos = (q_lower_arm_[i] - qp_q_arm_meas_[i]) / dt;
+            const double u_pos = (q_upper_arm_[i] - qp_q_arm_meas_[i]) / dt;
+            l_i = std::max(l_i, l_pos);
+            u_i = std::min(u_i, u_pos);
+        }
+
+        qp_l_[i] = l_i;
+        qp_u_[i] = u_i;
+    }
+
+    // Salvaguardia fattibilità: se l>u forza l=u (come nello script Python)
+    for (int i = 0; i < n_arm; ++i) {
+        if (qp_l_[i] > qp_u_[i]) {
+            qp_l_[i] = qp_u_[i];
+        }
+    }
+
+    // Aggiorna Hessian (upper-triangular) mantenendo pattern fisso
+    // Nota: qp_hessian_ contiene solo (i<=j)
+    for (int j = 0; j < n_arm; ++j) {
+        for (int i = 0; i <= j; ++i) {
+            qp_hessian_.coeffRef(i, j) = qp_P_dense_(i, j);
+        }
+    }
+
+    qp_solution_.setZero();
+    bool qp_ok = false;
+    if (!qp_initialized_) {
+        // Primo setup completo (usa i buffer già allocati)
+        qp_solver_.data()->setHessianMatrix(qp_hessian_);
+        qp_solver_.data()->setGradient(qp_gradient_);
+        qp_solver_.data()->setLowerBound(qp_l_);
+        qp_solver_.data()->setUpperBound(qp_u_);
+        qp_initialized_ = qp_solver_.initSolver();
+        if (!qp_initialized_) {
+            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "OSQP-Eigen initSolver() fallito");
         }
     } else {
-        // Caso non ridondante: usa l'intero Jacobiano generalizzato Jgen_ (6 x n_arm)
-        // A = Jgen * W^{-1} * Jgen^T
-        Eigen::MatrixXd A = Jgen_arm * W_inv * Jgen_arm.transpose(); // 6x6
-        Eigen::MatrixXd Areg = A + damping_ * Eigen::MatrixXd::Identity(A.rows(), A.cols());
-        Eigen::MatrixXd Ainv = Areg.ldlt().solve(Eigen::MatrixXd::Identity(A.rows(), A.cols()));
-        Eigen::MatrixXd Pinv = W_inv * Jgen_arm.transpose() * Ainv; // n_arm x 6
-        qdot_ik = Pinv * desired_ee_velocity_vec_;               // n_arm x 1 (feed-forward)
-        qdot_fb = Pinv * (k_err_x_ * e6);                        // n_arm x 1 (feedback pose intera)
-        // Null-space projector N = I - J# J, con J# = Pinv
-        if (qd_N_prev_) {
-            Eigen::MatrixXd N = Eigen::MatrixXd::Identity(n_arm, n_arm) - Pinv * Jgen_arm;
-            qdot_ns = N * qd_prev_arm_;
+        qp_solver_.updateHessianMatrix(qp_hessian_);
+        qp_solver_.updateGradient(qp_gradient_);
+        qp_solver_.updateLowerBound(qp_l_);
+        qp_solver_.updateUpperBound(qp_u_);
+    }
+
+    if (qp_initialized_) {
+        const auto flag = qp_solver_.solveProblem();
+        if (flag == OsqpEigen::ErrorExitFlag::NoError) {
+            qp_solution_ = qp_solver_.getSolution();
+            qp_ok = true;
         } else {
-            qdot_ns = Eigen::VectorXd::Zero(n_arm);
+            qp_ok = false;
         }
     }
 
-    // Saturazione delle velocità dei giunti in base ai limiti URDF (per-giunto)
-    // Applico la saturazione sul contributo totale qdot_tot = qdot_ik + qdot_fb + qdot_ns,
-    // ridistribuendo proporzionalmente su tutti i termini per preservarne il rapporto.
-    for (int i = 0; i < n_arm; ++i) {
-        const double vmax_i = v_max_[i];
-        if (vmax_i > 0.0) {
-            const double qdot_tot_i = qdot_ik[i] + qdot_fb[i] + qdot_ns[i];
-            const double abs_tot = std::abs(qdot_tot_i);
-            if (abs_tot > vmax_i) {
-                const double s = vmax_i / abs_tot; // 0 < s < 1
-                qdot_ik[i] *= s;
-                qdot_fb[i] *= s;
-                qdot_ns[i] *= s;
-            }
-        }
+    if (!qp_ok) {
+        // Fallback: x=0 se non ottimo/errore (come richiesto)
+        qp_solution_.setZero();
     }
 
-    // Log throttled solo delle velocità totali dei giunti (qdot_tot)
+    // Log throttled delle velocità trovate dal QP
     {
         std::ostringstream oss_tot;
         oss_tot.setf(std::ios::fixed);
         oss_tot << std::setprecision(4);
-        oss_tot << "qdot_tot [rad/s] = [";
-        for (int i = 0; i < qdot_ik.size(); ++i) {
-            const double qdot_tot_i = qdot_ik[i] + qdot_fb[i] + qdot_ns[i];
-            oss_tot << qdot_tot_i << (i + 1 < qdot_ik.size() ? ", " : "");
+        oss_tot << "qdot_qp [";
+        for (int i = 0; i < n_arm; ++i) {
+            oss_tot << qp_solution_[i] << (i + 1 < n_arm ? ", " : "");
         }
         oss_tot << "]";
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 100, "%s", oss_tot.str().c_str());
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 200, "%s", oss_tot.str().c_str());
     }
 
-    // 8. INTEGRAZIONE E CALCOLO COMANDO POSIZIONE GIUNTI
-    const rclcpp::Time now = this->now();
-    double dt = (now - last_update_time_).seconds();
-    last_update_time_ = now;
-    dt = std::clamp(dt, 0.0, 0.02); // max 20 ms
-
-    // Stato misurato dei giunti del braccio ricavato direttamente da q_ tramite idx_q_arm_
-    Eigen::VectorXd q_arm_from_q(n_arm); q_arm_from_q.setZero();
-    for (int i = 0; i < n_arm; ++i) {
-        int iq = idx_q_arm_[i];
-        if (iq >= 0 && iq < q_.size()) q_arm_from_q[i] = q_[iq];
-    }
-
-    // Buffer interni: q_ik (feed-forward) e delta_q (feedback)
-    static bool ff_fb_initialized = false;
-    static Eigen::VectorXd q_ik;    // n_arm
-    static Eigen::VectorXd delta_q; // n_arm
+    // 8. Integrazione diretta delle velocità QP -> comandi posizione giunti
+    // (senza separare IK/feedback, come richiesto)
     const bool need_reinit = (!have_desired_msg_) || ((this->now() - last_desired_msg_time_).seconds() > desired_timeout_sec_);
-    if (!ff_fb_initialized || need_reinit) {
-        q_ik = q_arm_from_q; // inizializza o reinizializza con misurato corrente
-        delta_q = Eigen::VectorXd::Zero(n_arm);
-        ff_fb_initialized = true;
-        // resetta le velocità precedenti per evitare salti dopo timeout
-        qd_prev_arm_.setZero();
-    }
-
-    // Integrazione separata (aggiungi la componente in nullo alla parte feed-forward)
-    q_ik    = q_ik    + (qdot_ik + qdot_ns) * dt;      // cinematica inversa prevista + null-space
-    delta_q = delta_q + qdot_fb * dt;      // correzione di feedback accumulata
-
-    // Configurazione da comandare: q_cmd = q_ik + delta_q
-    if (!arm_cmd_initialized_) {
+    if (!arm_cmd_initialized_ || need_reinit) {
         arm_cmd_pos_.assign(arm_joints_.size(), 0.0);
+        for (int i = 0; i < n_arm; ++i) {
+            arm_cmd_pos_[static_cast<size_t>(i)] = qp_q_arm_meas_[i];
+        }
         arm_cmd_initialized_ = true;
     }
+
     for (int i = 0; i < n_arm; ++i) {
-        arm_cmd_pos_[static_cast<size_t>(i)] = q_ik[i] + delta_q[i];
+        double q_next = arm_cmd_pos_[static_cast<size_t>(i)] + qp_solution_[i] * dt;
+        if (have_position_limits_ && std::isfinite(q_lower_arm_[i]) && std::isfinite(q_upper_arm_[i])) {
+            q_next = std::clamp(q_next, q_lower_arm_[i], q_upper_arm_[i]);
+        }
+        arm_cmd_pos_[static_cast<size_t>(i)] = q_next;
     }
 
     std_msgs::msg::Float64MultiArray command_msg;
@@ -608,11 +681,6 @@ void ClikUamNode::update()
     } else {
         if (arm_controller_pub_) arm_controller_pub_->publish(command_msg);
     }
-
-    // Aggiorna lo stato delle velocità precedenti dei giunti del braccio per la prossima iterazione
-    Eigen::VectorXd qdot_tot(n_arm);
-    for (int i = 0; i < n_arm; ++i) qdot_tot[i] = qdot_ik[i] + qdot_fb[i] + qdot_ns[i];
-    qd_prev_arm_ = qdot_tot;
 
 }
 

@@ -3,7 +3,6 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose.hpp"
-#include "visualization_msgs/msg/marker.hpp"
 #include "px4_msgs/msg/vehicle_local_position.hpp"
 #include "px4_msgs/msg/vehicle_attitude.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
@@ -14,13 +13,16 @@
 #include "interbotix_xs_msgs/msg/joint_group_command.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
-#include "tf2_ros/transform_broadcaster.h"
-#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "pinocchio/multibody/model.hpp"
 #include "pinocchio/multibody/data.hpp"
 #include "pinocchio/fwd.hpp"
 #include <Eigen/Dense>
-#include <array>
+#include <Eigen/Sparse>
+#include <OsqpEigen/OsqpEigen.h>
+// STL headers used in this header (member declarations)
+#include <memory>
+#include <string>
+#include <vector>
 
 class ClikUamNode : public rclcpp::Node
 {
@@ -46,9 +48,6 @@ private:
     bool desired_ee_velocity_ready_ = false;
     bool waiting_log_printed_ = false;
 
-    // Subscribers ai topics dove sono pubblicati i dati di posa del drone
-    rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
-    rclcpp::Subscription<px4_msgs::msg::VehicleAttitude>::SharedPtr vehicle_attitude_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr real_drone_pose_sub_;
     px4_msgs::msg::VehicleLocalPosition vehicle_local_position_;
     px4_msgs::msg::VehicleAttitude vehicle_attitude_;
@@ -62,7 +61,6 @@ private:
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
     // Pinocchio model and data
     pinocchio::Model model_;
@@ -71,15 +69,10 @@ private:
     pinocchio::FrameIndex ee_frame_id_;
 
     Eigen::MatrixXd Jgen_;
-    Eigen::MatrixXd inertia_matrix_;
     Eigen::VectorXd q_;
-    Eigen::VectorXd qd_;
-    Eigen::VectorXd error_pose_ee_;
-    Eigen::MatrixXd K_matrix_;
     Eigen::VectorXd desired_ee_velocity_vec_;
     // LC solution state: weights and previous joint velocities (arm-only)
     Eigen::VectorXd W_diag_;         // diagonal weights for joints (size = n_arm)
-    Eigen::VectorXd qd_prev_arm_;    // previous commanded joint velocities (size = n_arm)
 
     rclcpp::TimerBase::SharedPtr control_timer_;
 
@@ -93,26 +86,53 @@ private:
     sensor_msgs::msg::JointState current_joint_state_;
     bool has_current_joint_state_ = false;
 
-    double k_err_x_; // Guadagno proporzionale configurabile
-
     std::vector<std::string> arm_joints_;
-    std::vector<std::string> active_arm_joints_;
     // Indici di velocità per i giunti del braccio (ordine arm_joints_), precomputati una volta
     std::vector<int> idx_v_arm_;
     // Indici di posizione (q) per i giunti del braccio (ordine arm_joints_), precomputati una volta
     std::vector<int> idx_q_arm_;
-    // Limiti massimi di velocità per-giunto [rad/s] (ordine arm_joints_), precomputati una volta
-    Eigen::VectorXd v_max_;
+
+    // === QP (OSQP-Eigen) state ===
+    OsqpEigen::Solver qp_solver_;
+    bool qp_initialized_ = false;
+
+    // Dimensioni QP: variabili = giunti controllati (arm_joints_), vincoli = box (A=I)
+    int qp_n_ = 0;
+
+    // QP data buffers (pre-allocati)
+    Eigen::SparseMatrix<double> qp_hessian_;            // n x n (upper-triangular sparsity)
+    Eigen::SparseMatrix<double> qp_A_;                  // n x n (Identity)
+    Eigen::VectorXd qp_gradient_;                       // n
+    Eigen::VectorXd qp_l_;                              // n
+    Eigen::VectorXd qp_u_;                              // n
+    Eigen::VectorXd qp_solution_;                       // n
+
+    // Runtime buffers to avoid allocations in update()
+    Eigen::VectorXd qp_q_arm_meas_;                     // n
+
+    // Dense work buffers
+    Eigen::MatrixXd qp_P_dense_;                        // n x n
+    Eigen::MatrixXd qp_J_task_;                         // (3 or 6) x n
+    Eigen::VectorXd qp_v_task_;                         // (3 or 6)
+
+    // Limits per joint in arm_joints_ order (if available)
+    Eigen::VectorXd q_lower_arm_;
+    Eigen::VectorXd q_upper_arm_;
+    Eigen::VectorXd v_limit_arm_;
+    bool have_position_limits_ = false;
+    bool have_velocity_limits_ = false;
+
+    // QP parameters
+    double qp_lambda_reg_ = 1e-4;
+    double qp_vel_max_default_ = 2.0;
+    double kp_pos_ = 20.0;
+    double kp_ori_ = 20.0;
 
     // Parametri runtime
     std::string robot_name_;
     bool real_system_ = true;
     // Se true, ignora l'orientazione e usa solo la parte traslazionale (prime 3 righe del Jacobiano)
     bool redundant_ = false;
-    // Se true, usa qd(k-1) proiettata nel nullo di Jgen come null-space velocity
-    bool qd_N_prev_ = false;
-    // Damping per pseudoinversa pesata (Tikhonov)
-    double damping_ = 0.0;
     // Integrazione comandi posizione giunti braccio a frequenza di controllo
     std::vector<double> arm_cmd_pos_;
     bool arm_cmd_initialized_ = false;
