@@ -155,7 +155,7 @@ $$
 where:
 
 - $[\mathbf{J}_{\text{gen}}]$ is the **Generalized Jacobian matrix**.
-- $\mathbf{\nu}_{\text{e,des}}=\mathbf{\nu}_{\text{e,ref}}+[\mathbf{K}]\mathbf{e}_x$ is the EE desired twist
+- $`\mathbf{\nu}_{\text{e,des}}=\mathbf{\nu}_{\text{e,ref}}+[\mathbf{K}]\mathbf{e}_x`$ is the EE desired twist
 - $[\mathbf{K}]$ is the gain matrix.
 - $`\mathbf{e}_x`$ is EE task-space error vector. It is computed as $`\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})`$.
 
