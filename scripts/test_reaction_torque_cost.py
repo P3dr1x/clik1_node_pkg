@@ -19,6 +19,18 @@ import pinocchio as pin
 import pinocchio.visualize
 
 EE_FRAME = "mobile_wx250s/ee_gripper_link"
+ARM_BASE_LINK = "mobile_wx250s/base_link"
+
+
+def skew(v: np.ndarray) -> np.ndarray:
+    """Ritorna la matrice skew-simmetrica 3x3 tale che skew(v) @ w = v x w."""
+    v = np.asarray(v, dtype=float).reshape(3)
+    return np.array(
+        [[0.0, -v[2], v[1]],
+         [v[2], 0.0, -v[0]],
+         [-v[1], v[0], 0.0]],
+        dtype=float,
+    )
 
 
 def find_urdf_and_pkg_dir():
@@ -42,6 +54,26 @@ def find_urdf_and_pkg_dir():
     raise FileNotFoundError(f"URDF t960a.urdf non trovato. Cercati: {cand1} e {cand2}")
 
 
+def find_wx250s_urdf_and_pkg_dir():
+    """Restituisce (urdf_filename, pkg_dir) per wx250s.urdf (solo manipolatore).
+    Prova nel path install della workspace e poi nella workspace sorgente.
+    """
+    ws_install = "/home/mattia/interbotix_ws/install"
+    cand1 = os.path.join(ws_install, "clik1_node_pkg", "share", "clik1_node_pkg", "model", "wx250s.urdf")
+    pkg1 = os.path.join(ws_install, "clik1_node_pkg", "model")
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    cand2 = os.path.normpath(os.path.join(here, "..", "model", "wx250s.urdf"))
+    pkg2 = os.path.normpath(os.path.join(here, "..", "model"))
+
+    if os.path.exists(cand1):
+        return cand1, pkg1
+    if os.path.exists(cand2):
+        return cand2, pkg2
+
+    raise FileNotFoundError(f"URDF wx250s.urdf non trovato. Cercati: {cand1} e {cand2}")
+
+
 ## Nessuna trasformazione manuale: useremo direttamente l'opzione Convention di crba
 
 
@@ -56,10 +88,18 @@ def main():
     parser.set_defaults(realtime=True)
     parser.add_argument("--rt-scale", type=float, default=1.0,
                         help="Fattore di scala del tempo reale (1=tempo reale, >1 più lento, <1 più veloce).")
-    parser.add_argument("--position-only", action="store_true",
-                        help="Usa il task solo di posizione (3D). Di default esegue tracking di posa (6D).")
+    parser.add_argument(
+        "--kin-constraint",
+        choices=["pose", "position"],
+        default="pose",
+        help=(
+            "Seleziona il vincolo cinematico di uguaglianza: "
+            "'pose' = tracking posa EE 6D; 'position' = tracking solo posizione EE 3D."
+        ),
+    )
     args = parser.parse_args()
-    # Carica modello URDF con base flottante
+
+    # Carica modello URDF COMPLETO (UAM) con base flottante
     urdf_filename, pkg_dir = find_urdf_and_pkg_dir()
     model, cmodel, vmodel = pin.buildModelsFromUrdf(
         urdf_filename,
@@ -68,6 +108,21 @@ def main():
     )
     data = model.createData()
 
+    # Carica modello URDF del SOLO MANIPOLATORE con base flottante
+    wx_urdf_filename, wx_pkg_dir = find_wx250s_urdf_and_pkg_dir()
+    model_man, _, _ = pin.buildModelsFromUrdf(
+        wx_urdf_filename,
+        package_dirs=[wx_pkg_dir],
+        root_joint=pin.JointModelFreeFlyer(),
+    )
+    data_man = model_man.createData()
+
+    # Massa totale manipolatore (per il momento del peso rispetto a O)
+    m_man_tot = 0.0
+    for inertia in model_man.inertias[1:]:  # salta universe
+        m_man_tot += float(inertia.mass)
+    g_world = np.array(model_man.gravity.linear).reshape(3)
+
     # Configurazione iniziale: neutra
     q = pin.neutral(model)
 
@@ -75,6 +130,109 @@ def main():
     if not model.existFrame(EE_FRAME):
         raise RuntimeError(f"Frame EE non trovato: {EE_FRAME}")
     ee_frame_id = model.getFrameId(EE_FRAME)
+
+    if not model.existFrame(ARM_BASE_LINK):
+        raise RuntimeError(f"Frame base braccio non trovato nel modello completo: {ARM_BASE_LINK}")
+    arm_base_frame_id = model.getFrameId(ARM_BASE_LINK)
+
+    # Verifica che anche il manipolatore separato contenga i frame attesi
+    if not model_man.existFrame(EE_FRAME):
+        raise RuntimeError(f"Frame EE non trovato nel modello manipolatore: {EE_FRAME}")
+    if not model_man.existFrame(ARM_BASE_LINK):
+        raise RuntimeError(f"Frame base braccio non trovato nel modello manipolatore: {ARM_BASE_LINK}")
+
+    # Prepara mappa di corrispondenza joint (full <-> manipolatore) per riordinare colonne
+    # Decision variable: qdot_arm = v_full[6:] (ordine del modello completo)
+    n_arm = model.nv - 6
+    n_arm_man = model_man.nv - 6
+    if n_arm_man != n_arm:
+        raise RuntimeError(f"nv mismatch: n_arm(full)={n_arm} vs n_arm(man)={n_arm_man}. Verifica URDF wx250s.")
+
+    # map_full_to_man[k_full] = k_man (indici 0-based dentro i blocchi dopo i 6 DoF base)
+    map_full_to_man = np.full(n_arm, -1, dtype=int)
+    for k_full in range(n_arm):
+        gv = 6 + k_full
+        jname = None
+        for j in range(model.njoints):
+            if model.joints[j].nv == 0:
+                continue
+            start = model.joints[j].idx_v
+            if start <= gv < start + model.joints[j].nv:
+                jname = model.names[j]
+                break
+        if jname is None:
+            continue
+        jid_man = model_man.getJointId(jname)
+        if jid_man <= 0:
+            continue
+        idx_v_man = model_man.joints[jid_man].idx_v
+        map_full_to_man[k_full] = idx_v_man - 6
+    if np.any(map_full_to_man < 0):
+        bad = np.where(map_full_to_man < 0)[0]
+        bad_names = []
+        for k in bad[:10]:
+            gv = 6 + int(k)
+            # best-effort name
+            nm = f"vel_idx_{gv}"
+            for j in range(model.njoints):
+                if model.joints[j].nv == 0:
+                    continue
+                start = model.joints[j].idx_v
+                if start <= gv < start + model.joints[j].nv:
+                    nm = model.names[j]
+                    break
+            bad_names.append(nm)
+        raise RuntimeError(f"Impossibile mappare alcuni giunti full->man (es. {bad_names}).")
+
+
+
+    def build_q_man_from_full(q_full: np.ndarray) -> np.ndarray:
+        """Costruisce q_man (FreeFlyer+giunti) imponendo la posa di ARM_BASE_LINK dal modello completo."""
+        q_man = pin.neutral(model_man)
+        # serve che data contenga oMf aggiornati
+        T_w_armbase = data.oMf[arm_base_frame_id]
+        q_man[0:3] = np.array(T_w_armbase.translation).reshape(3)
+        quat = pin.Quaternion(T_w_armbase.rotation)
+        quat.normalize()
+        q_man[3:7] = np.array([quat.x, quat.y, quat.z, quat.w])
+
+        # Copia posizioni giunti per nome
+        for jid_man in range(2, model_man.njoints):
+            if model_man.joints[jid_man].nq == 0:
+                continue
+            jname = model_man.names[jid_man]
+            jid_full = model.getJointId(jname)
+            if jid_full <= 0:
+                continue
+            idx_q_man = model_man.joints[jid_man].idx_q
+            idx_q_full = model.joints[jid_full].idx_q
+            q_man[idx_q_man] = q_full[idx_q_full]
+        return q_man
+
+
+
+    def build_v_man_from_full(v_full: np.ndarray) -> np.ndarray:
+        """Costruisce v_man (FreeFlyer+giunti) usando la twist LOCAL della ARM_BASE_LINK dal modello completo."""
+        v_man = np.zeros(model_man.nv)
+        # twist della base del braccio (LOCAL) dal modello completo
+        V_arm = pin.getFrameVelocity(model, data, arm_base_frame_id, pin.ReferenceFrame.LOCAL)
+        v_man[0:3] = np.array(V_arm.linear).reshape(3)
+        v_man[3:6] = np.array(V_arm.angular).reshape(3)
+
+        # Copia velocità giunti per nome
+        for jid_man in range(2, model_man.njoints):
+            if model_man.joints[jid_man].nv == 0:
+                continue
+            jname = model_man.names[jid_man]
+            jid_full = model.getJointId(jname)
+            if jid_full <= 0:
+                continue
+            idx_v_man = model_man.joints[jid_man].idx_v
+            idx_v_full = model.joints[jid_full].idx_v
+            v_man[idx_v_man] = v_full[idx_v_full]
+        return v_man
+
+
 
     # Stampa Jgen (usando Ag) nella configurazione iniziale neutra
     q0 = q.copy()
@@ -95,24 +253,6 @@ def main():
     np.set_printoptions(precision=5, suppress=True)
     print("\nJgen (neutro) shape:", Jgen0.shape)
     print("Jgen (neutro):\n", Jgen0)
-
-    # # Imposta una posa non banale della base (per evidenziare la differenza LOCAL vs WORLD)
-    # # Traslazione
-    # q[0:3] = np.array([0.3, -0.2, 0.4])
-    # # Rotazione da RPY (roll, pitch, yaw)
-    # R = pin.rpy.rpyToMatrix(0.2, -0.1, 0.5)
-    # quat = pin.Quaternion(R)  # XYZW
-    # q[3:7] = np.array([quat.x, quat.y, quat.z, quat.w])
-
-    # # Calcolo CRBA (matrice di massa generalizzata) in convenzione LOCAL
-    # M_local = pin.crba(model, data, q, pin.Convention.LOCAL).copy()
-    # # Assicura simmetria numerica
-    # M_local = (M_local + M_local.T) * 0.5
-
-    # np.set_printoptions(precision=5, suppress=True)
-    # sl = slice(0, min(12, model.nv))
-    # print("M_local(q) shape:", M_local.shape)
-    # print("\nM_local (prime 12x12):\n", M_local[sl, sl])
 
     # Visualizzazione con MeshCat (posa drone+braccio)
     try:
@@ -151,27 +291,25 @@ def main():
     # QP-based control setup (OSQP)
     # =============================
     # QP formulation (decision x = qdot_arm, size n_arm):
-    # minimize 0.5 * x^T P x + q^T x
-    #   P = Jgen^T * W * Jgen + lambda_reg * I
-    #   q = - Jgen^T * W * v_ee_des
-    # subject to box constraints A=I, l <= x <= u
-    #   joint velocity limits: dq_min <= x <= dq_max
-    #   discretized position limits: (q_min - q_arm)/dt <= x <= (q_max - q_arm)/dt
-    # bounds are intersected elementwise.
-
-    # Task selection: 6D (position+orientation) o 3D (position-only) via CLI
-    POSITION_ONLY = args.position_only
-    W_diag = np.ones(6 if not POSITION_ONLY else 3)  # identity weights initially
+    # minimize 0.5 * || J_mom x - b_mom ||^2 + 0.5*lambda_reg*||x||^2
+    # subject to:
+    #   (1) vincolo cinematico di uguaglianza: J_kin x = v_ee_des  (3D o 6D)
+    #   (2) box constraints su velocità/posizione giunti: l <= x <= u
     lambda_reg = 1e-4
     VEL_MAX_DEFAULT = 2.0
+
+    # Guadagni feedback per il vincolo cinematico (stile clik_uam_node.cpp)
+    kp_pos = 10.0
+    kp_ori = 10.0
 
     rate_hz = 100.0
     dt = 1.0 / rate_hz
     T_total = 12.0  # durata traiettoria circolare [s]
     eps_Ab = 1e-9
 
+    kin_dim = 6 if args.kin_constraint == "pose" else 3
+
     # Dimensions and limits extraction
-    n_arm = model.nv - 6
     # position limits from URDF via Pinocchio (nq-sized), slice last n_arm
     lower_q_arm = None
     upper_q_arm = None
@@ -193,8 +331,26 @@ def main():
         pass
 
     # Pre-build OSQP problem with fixed sparsity
-    # A = Identity (box constraints)
-    A_sparse = sparse.eye(n_arm, format='csc')
+    # Vincoli: [J_kin; I] x in [v_ee_des (eq); bounds]
+    n_constr = kin_dim + n_arm
+
+    # Costruisci pattern CSC fisso per A: per ogni colonna j
+    #  - righe 0..kin_dim-1 (dense)
+    #  - riga kin_dim + j (identità)
+    indptr = np.zeros(n_arm + 1, dtype=np.int32)
+    indices = np.zeros(n_arm * (kin_dim + 1), dtype=np.int32)
+    data_A_init = np.zeros(n_arm * (kin_dim + 1), dtype=float)
+    nnz_per_col = kin_dim + 1
+    for j in range(n_arm + 1):
+        indptr[j] = j * nnz_per_col
+    for j in range(n_arm):
+        base = indptr[j]
+        indices[base:base + kin_dim] = np.arange(kin_dim, dtype=np.int32)
+        indices[base + kin_dim] = kin_dim + j
+        # inizializza A con J_kin=0 e I=1
+        data_A_init[base:base + kin_dim] = 0.0
+        data_A_init[base + kin_dim] = 1.0
+    A_sparse = sparse.csc_matrix((data_A_init, indices, indptr), shape=(n_constr, n_arm))
 
     # Helper to map dense symmetric P to OSQP Px (upper-triangular column-wise)
     def dense_to_triu_px(P_dense: np.ndarray) -> np.ndarray:
@@ -313,9 +469,24 @@ def main():
         # Evita errore di setup: imposta l == u sugli indici infeasible
         l_init[infeas_init] = u_init[infeas_init]
 
+    # Bounds iniziali per OSQP: primi kin_dim vincoli di uguaglianza (inizialmente 0), poi bounds giunti
+    l_osqp_init = np.zeros(n_constr)
+    u_osqp_init = np.zeros(n_constr)
+    l_osqp_init[:kin_dim] = 0.0
+    u_osqp_init[:kin_dim] = 0.0
+    l_osqp_init[kin_dim:] = l_init
+    u_osqp_init[kin_dim:] = u_init
+
+    # Mantieni dita fisse: imposta l=u=0 sulle relative componenti (nel blocco identità)
+    if len(fixed_arm_indices):
+        for idx in fixed_arm_indices:
+            if 0 <= idx < n_arm:
+                l_osqp_init[kin_dim + idx] = 0.0
+                u_osqp_init[kin_dim + idx] = 0.0
+
     # Initialize OSQP solver once
     solver = osqp.OSQP()
-    solver.setup(P=P_init, q=q_init_vec, A=A_sparse, l=l_init, u=u_init,
+    solver.setup(P=P_init, q=q_init_vec, A=A_sparse, l=l_osqp_init, u=u_osqp_init,
                  warm_start=True, verbose=False)
 
     # Logging
@@ -332,6 +503,7 @@ def main():
     pin.updateFramePlacements(model, data)
     T_we0 = data.oMf[ee_frame_id]
     p0 = np.array(T_we0.translation).reshape(3)
+    R_we_des = np.array(T_we0.rotation).copy()  # orientazione desiderata costante (WORLD)
     RADIUS = 0.10
     center = p0.copy()
     center[0] = p0[0] - RADIUS
@@ -344,13 +516,16 @@ def main():
     N_steps = int(round(T_total / dt))
     draw_hz = min(30.0, rate_hz)
     draw_stride = max(1, int(round(rate_hz / draw_hz)))
-    print("\nAvvio loop Jgen IK (for con N_steps)...")
+    print("\nAvvio loop reaction-torque QP (costo momento, vincolo cinematica)...")
+
+    # Velocità precedente (necessaria per stimare p_man, K_O, v_O al tempo t_k)
+    v_full_prev = np.zeros(model.nv)
 
     for i in range(N_steps + 1):
         loop_start = time.time()
         t = i * dt
 
-        # Cinematica e Jacobiani
+        # Cinematica e Jacobiani (q corrente)
         pin.forwardKinematics(model, data, q)
         pin.computeJointJacobians(model, data, q)
         pin.updateFramePlacements(model, data)
@@ -360,6 +535,7 @@ def main():
 
         # Posizione end-effector (WORLD)
         p_ee = np.array(data.oMf[ee_frame_id].translation).reshape(3)
+        R_we = np.array(data.oMf[ee_frame_id].rotation)
 
         # Partizioni Jacobiano
         Jb = J[:, :6]
@@ -376,6 +552,31 @@ def main():
         Ab_inv_Am = np.linalg.solve(Ab_reg, Am)
         Jgen = Jm - Jb @ Ab_inv_Am
 
+        # === Costruisci Momentum Matrix del solo manipolatore rispetto al punto O (ARM_BASE_LINK) ===
+        # Impongo posa base del braccio dal modello completo
+        q_man = build_q_man_from_full(q)
+        pin.computeCentroidalMap(model_man, data_man, q_man)
+        Ag_man = data_man.Ag  # 6 x (6+n_arm)
+
+        # Trasporto del momento: A_KO = A_K + skew(G_mO) A_p
+        # dove G_mO = O - G_m (espresso in WORLD)
+        O_w = q_man[0:3].copy()
+        Gm_w = np.array(data_man.com[0]).reshape(3)
+        GmO_w = (O_w - Gm_w)
+
+        A_p_man = Ag_man[0:3, :]
+        A_K_man = Ag_man[3:6, :]
+        A_KO_man = A_K_man + skew(GmO_w) @ A_p_man
+
+        A_KO_b_man = A_KO_man[:, 0:6]   # 3x6
+        A_KO_m_man = A_KO_man[:, 6:]    # 3xn_arm (ordine del modello manipolatore)
+
+        # Riordina colonne per combaciare con qdot_arm (ordine del modello completo)
+        A_KO_m_man_full_order = A_KO_m_man[:, map_full_to_man]
+
+        # Blocco di momento (da Jext_instructions.md): (A_KO,b^man Ab^{-1} Am + A_KO,m^man)
+        J_mom = A_KO_b_man @ Ab_inv_Am + A_KO_m_man_full_order  # 3 x n_arm
+
         # Velocità desiderata dell'EE (WORLD/LWA): traiettoria circolare su piano x-z
         if t <= T_total:
             r = p_ee - center
@@ -385,18 +586,57 @@ def main():
         else:
             v_ee_des = np.zeros(6)
 
-        # Build QP for x = qdot_arm
-        if POSITION_ONLY:
-            J_task = Jgen[0:3, :]
-            v_task = v_ee_des[0:3]
-        else:
-            J_task = Jgen
-            v_task = v_ee_des
+        # Riferimento posizione (WORLD)
+        theta = omega_y * min(t, T_total)
+        p_des = center.copy()
+        p_des[0] = center[0] + RADIUS * np.cos(theta)
+        p_des[2] = center[2] + RADIUS * np.sin(theta)
 
-        # Weights (identity)
-        W = np.diag(W_diag)
-        P_dense = J_task.T @ (W @ J_task) + lambda_reg * np.eye(n_arm)
-        q_vec = - J_task.T @ (W @ v_task)
+        # === Vincolo cinematico di uguaglianza: J_kin x = v_kin ===
+        # Stile clik_uam_node.cpp: e_pos per differenza, e_ang via log3(R_des*R_cur^T)
+        e_pos = (p_des - p_ee)
+        R_err_world = R_we_des @ R_we.T
+        e_ang = np.array(pin.log3(R_err_world)).reshape(3)
+        v_kin_6d = np.zeros(6)
+        v_kin_6d[0:3] = v_ee_des[0:3] + kp_pos * e_pos
+        v_kin_6d[3:6] = v_ee_des[3:6] + kp_ori * e_ang
+
+        if kin_dim == 3:
+            J_kin = Jgen[0:3, :]
+            v_kin = v_kin_6d[0:3]
+        else:
+            J_kin = Jgen
+            v_kin = v_kin_6d
+
+        # Task 2: momento manipolatore rispetto a O (formula di trasporto).
+        # Usa lo stato al tempo t_k stimato dalla (q corrente, v_full_prev).
+        # tau_R è impostato a zero; tau_g (momento del peso rispetto a O) viene incluso.
+        pin.forwardKinematics(model, data, q, v_full_prev)
+        pin.updateFramePlacements(model, data)
+        q_man_meas = build_q_man_from_full(q)
+        v_man_meas = build_v_man_from_full(v_full_prev)
+
+        pin.computeCentroidalMomentum(model_man, data_man, q_man_meas, v_man_meas)
+        p_man = np.array(data_man.hg.linear).reshape(3)
+        K_Gm_man = np.array(data_man.hg.angular).reshape(3)
+
+        O_w_meas = q_man_meas[0:3].copy()
+        Gm_w_meas = np.array(data_man.com[0]).reshape(3)
+        GmO_w_meas = (O_w_meas - Gm_w_meas)
+        K_O_man = K_Gm_man + np.cross(GmO_w_meas, p_man)
+
+        V_O_world = pin.getFrameVelocity(model, data, arm_base_frame_id, pin.ReferenceFrame.WORLD)
+        v_O_world = np.array(V_O_world.linear).reshape(3)
+
+        # Momento del peso rispetto a O: tau_g = (GmO x (m_tot * g))
+        Fg_man = m_man_tot * g_world
+        tau_g = np.cross(GmO_w_meas, Fg_man)
+
+        v_mom_task = K_O_man + dt * (np.cross(v_O_world, p_man) + tau_g)
+
+        # === Costo: solo momento (reaction torque minimization surrogate) ===
+        P_dense = (J_mom.T @ J_mom) + lambda_reg * np.eye(n_arm)
+        q_vec = - (J_mom.T @ v_mom_task)
 
         # Bounds (recompute each iter)
         q_arm = q[-n_arm:]
@@ -422,21 +662,36 @@ def main():
                     l_bounds[idx] = 0.0
                     u_bounds[idx] = 0.0
 
-        # Posizione desiderata lungo la circonferenza per diagnostica e log
-        theta = omega_y * min(t, T_total)
-        p_des = center.copy()
-        p_des[0] = center[0] + RADIUS * np.cos(theta)
-        p_des[2] = center[2] + RADIUS * np.sin(theta)
+        # Log riferimento posizione (diagnostica)
         p_des_log.append(p_des.copy())
+
+        # Costruisci vettore Ax (valori di A in CSC con pattern fisso)
+        # Ordine: per ogni colonna j: J_kin[:,j] poi 1.0 (identità)
+        Ax_new = np.zeros(n_arm * (kin_dim + 1), dtype=float)
+        for j in range(n_arm):
+            base = j * (kin_dim + 1)
+            Ax_new[base:base + kin_dim] = J_kin[:, j]
+            Ax_new[base + kin_dim] = 1.0
+
+        # Bounds OSQP: primi kin_dim uguali (uguaglianza), poi bounds giunti
+        l_osqp = np.zeros(n_constr)
+        u_osqp = np.zeros(n_constr)
+        l_osqp[:kin_dim] = v_kin
+        u_osqp[:kin_dim] = v_kin
+        l_osqp[kin_dim:] = l_bounds
+        u_osqp[kin_dim:] = u_bounds
 
         # Update OSQP matrices and solve
         try:
             Px_new = dense_to_triu_px(P_dense)
-            solver.update(Px=Px_new, q=q_vec, l=l_bounds, u=u_bounds)
+            solver.update(Px=Px_new, q=q_vec, Ax=Ax_new, l=l_osqp, u=u_osqp)
             res = solver.solve()
             status = res.info.status
             pos_err_norm = np.linalg.norm(p_des - p_ee)
-            print(f"OSQP status: {status} | ||e_pos|| = {pos_err_norm:.5f}")
+            ang_err_norm = float(np.linalg.norm(e_ang))
+            print(
+                f"OSQP status: {status} | kin_dim={kin_dim} | ||e_pos|| = {pos_err_norm:.5f} | ||e_ang|| = {ang_err_norm:.5f} | ||K_O|| = {float(np.linalg.norm(K_O_man)):.5f}"
+            )
             if status in ("solved", "optimal") and res.x is not None:
                 qdot_arm = res.x
             else:
@@ -453,6 +708,9 @@ def main():
         v_full[:6] = v_base
         v_full[6:] = qdot_arm
         q = pin.integrate(model, q, v_full * dt)
+
+        # Salva v_full per stimare p_man, K_O, v_O al prossimo passo
+        v_full_prev = v_full.copy()
 
         # Visualizzazione a rate fisso (stride rispetto al rate di controllo)
         if 'viz' in locals() and (i % draw_stride) == 0:
