@@ -26,6 +26,9 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     this->declare_parameter<bool>("use_gazebo_pose", true);
     this->get_parameter("use_gazebo_pose", use_gazebo_pose_);
 
+    this->declare_parameter<bool>("use_gz_odom", true);
+    use_gz_odom_ = this->get_parameter("use_gz_odom").as_bool();
+
     // Parametri per instradare i topic e la modalità reale/simulata
     this->declare_parameter<std::string>("robot_name", "mobile_wx250s");
     this->declare_parameter<bool>("real_system", false);
@@ -69,6 +72,28 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
             "/t960a/pose", 10, std::bind(&ClikUamNode::real_drone_pose_callback, this, std::placeholders::_1));
     }
 
+    // Sottoscrizione alla velocità/odometria del drone. Regole:
+    // - Se use_gz_odom == false: usa /real_t960a_twist (da real_drone_vel_pub) e NON iscriversi a /model/t960a_0/odometry
+    // - Se use_gz_odom == true e use_gazebo_pose_ == true: usa /model/t960a_0/odometry
+    // - Se real_system_ == true: comunque iscriviti a /real_t960a_twist
+
+    if (!use_gz_odom_ || real_system_ || !use_gazebo_pose_)
+    {
+        real_drone_twist_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
+            "/real_t960a_twist", rclcpp::SensorDataQoS(),
+            std::bind(&ClikUamNode::real_drone_twist_callback, this, std::placeholders::_1));
+        RCLCPP_INFO(this->get_logger(), "Iscrizione a /real_t960a_twist (Twist FLU) [use_gz_odom=%d, real_system=%d, use_gazebo_pose=%d]",
+                    use_gz_odom_, real_system_, use_gazebo_pose_);
+    }
+
+    if (use_gz_odom_ && use_gazebo_pose_)
+    {
+        gazebo_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+            "/model/t960a_0/odometry", 10,
+            std::bind(&ClikUamNode::gazebo_odometry_callback, this, std::placeholders::_1));
+        RCLCPP_INFO(this->get_logger(), "Iscrizione a /model/t960a_0/odometry (nav_msgs/Odometry) [use_gz_odom=true, use_gazebo_pose=true]");
+    }
+
     // Joint states: se reale, leggi da /<robot_name>/joint_states (xs_sdk); se SITL, da /joint_states (ros2_control)
     {
         std::string joint_states_topic;
@@ -108,6 +133,10 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // Allocazioni
     q_.resize(model_.nq);
     q_.setZero();
+    qd_.resize(model_.nv);
+    qd_.setZero();
+    v_gen_meas_.resize(model_.nv);
+    v_gen_meas_.setZero();
     J_.resize(6, model_.nv);
     Jgen_.resize(6, model_.nv - 6);
     desired_ee_velocity_vec_.resize(6);
@@ -362,9 +391,89 @@ void ClikUamNode::gazebo_pose_callback(const geometry_msgs::msg::PoseArray::Shar
     }
 }
 
+void ClikUamNode::gazebo_odometry_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+    gazebo_odom_ = *msg;
+    has_gazebo_odom_ = true;
+}
+
+void ClikUamNode::real_drone_twist_callback(const geometry_msgs::msg::Twist::SharedPtr msg)
+{
+    // Twist già espresso in:
+    // - lineare: WORLD-FLU con heading iniziale rimosso (da real_drone_vel_pub)
+    // - angolare: body FLU
+    real_drone_twist_ = *msg;
+    has_real_drone_twist_ = true;
+}
+
 void ClikUamNode::joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
 {
+    // Copia il messaggio
     current_joint_state_ = *msg;
+
+    // Se il topic non fornisce le velocità o contiene NaN/Inf, stimale via differenze finite
+    const bool names_ok = !current_joint_state_.name.empty();
+    const bool pos_ok = !current_joint_state_.position.empty();
+    const bool vel_absent = current_joint_state_.velocity.empty();
+    bool vel_nonfinite = false;
+    if (!vel_absent) {
+        for (const auto &v : current_joint_state_.velocity) {
+            if (!std::isfinite(v)) {
+                vel_nonfinite = true;
+                break;
+            }
+        }
+    }
+
+    if ((vel_absent || vel_nonfinite) && names_ok && pos_ok)
+    {
+        // Usa timestamp del messaggio se disponibile; altrimenti usa ora
+        rclcpp::Time stamp = current_joint_state_.header.stamp;
+        if (stamp.nanoseconds() == 0) {
+            stamp = this->now();
+        }
+
+        std::vector<double> vel_est(current_joint_state_.name.size(), 0.0);
+        double dt = 0.0;
+        if (last_joint_state_time_.nanoseconds() != 0) {
+            dt = (stamp - last_joint_state_time_).seconds();
+        }
+
+        if (dt > 1e-5) {
+            for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+                const auto &jn = current_joint_state_.name[i];
+                const double q_now = current_joint_state_.position[i];
+                auto it = prev_joint_positions_.find(jn);
+                if (it != prev_joint_positions_.end() && std::isfinite(q_now)) {
+                    const double q_prev = it->second;
+                    vel_est[i] = (q_now - q_prev) / dt;
+                } else {
+                    vel_est[i] = 0.0;
+                }
+            }
+        } else {
+            std::fill(vel_est.begin(), vel_est.end(), 0.0);
+        }
+
+        current_joint_state_.velocity = vel_est;
+
+        for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+            prev_joint_positions_[current_joint_state_.name[i]] = current_joint_state_.position[i];
+        }
+        last_joint_state_time_ = stamp;
+    } else {
+        if (names_ok && pos_ok) {
+            for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+                prev_joint_positions_[current_joint_state_.name[i]] = current_joint_state_.position[i];
+            }
+            rclcpp::Time stamp = current_joint_state_.header.stamp;
+            if (stamp.nanoseconds() == 0) {
+                stamp = this->now();
+            }
+            last_joint_state_time_ = stamp;
+        }
+    }
+
     has_current_joint_state_ = true;
 }
 
@@ -398,6 +507,52 @@ void ClikUamNode::update()
     q_[5] = vehicle_attitude_.q[3]; // z
     q_[6] = vehicle_attitude_.q[0]; // w
 
+    // Velocità WORLD del drone
+    Eigen::Vector3d vlin_base_world = Eigen::Vector3d::Zero();
+    Eigen::Vector3d omega_base_world = Eigen::Vector3d::Zero();
+
+    // Sorgenti disponibili:
+    //  - Twist FLU pubblicato da real_drone_vel_pub su /real_t960a_twist
+    //  - Odometria Gazebo (WORLD-FLU) su /model/t960a_0/odometry
+    if (has_real_drone_twist_)
+    {
+        vlin_base_world = Eigen::Vector3d(
+            real_drone_twist_.linear.x,
+            real_drone_twist_.linear.y,
+            real_drone_twist_.linear.z);
+    }
+    else if (use_gazebo_pose_ && has_gazebo_odom_)
+    {
+        vlin_base_world = Eigen::Vector3d(
+            gazebo_odom_.twist.twist.linear.x,
+            gazebo_odom_.twist.twist.linear.y,
+            gazebo_odom_.twist.twist.linear.z);
+
+        omega_base_world = Eigen::Vector3d(
+            gazebo_odom_.twist.twist.angular.x,
+            gazebo_odom_.twist.twist.angular.y,
+            gazebo_odom_.twist.twist.angular.z);
+    }
+
+    // Converti WORLD -> LOCAL usando R^T per la parte lineare.
+    // La parte angolare, nel caso reale, arriva già in body FLU da real_drone_vel_pub.
+    Eigen::Quaterniond q_world_base(vehicle_attitude_.q[0], vehicle_attitude_.q[1], vehicle_attitude_.q[2], vehicle_attitude_.q[3]);
+    Eigen::Matrix3d Rwb = q_world_base.normalized().toRotationMatrix();
+    Eigen::Vector3d vlin_base_local = Rwb.transpose() * vlin_base_world;
+
+    Eigen::Vector3d omega_base_local;
+    if (has_real_drone_twist_)
+    {
+        omega_base_local = Eigen::Vector3d(
+            real_drone_twist_.angular.x,
+            real_drone_twist_.angular.y,
+            real_drone_twist_.angular.z);
+    }
+    else
+    {
+        omega_base_local = Rwb.transpose() * omega_base_world;
+    }
+
     // 2. LEGGI POSIZIONI GIUNTI BRACCIO
     for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
         // Cerca il giunto nel modello di Pinocchio e aggiorna q_
@@ -412,10 +567,32 @@ void ClikUamNode::update()
     }
     pinocchio::normalize(model_, q_);
 
-    // Velocità generalizzate: assumiamo base ferma (hovering) -> prime 6 componenti zero
+    // Estrai velocità giunti dai JointState (se disponibili)
+    qd_.setZero();
+    if (!current_joint_state_.velocity.empty()) {
+        for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+            const auto &jn = current_joint_state_.name[i];
+            if (model_.existJointName(jn)) {
+                pinocchio::JointIndex jidx = model_.getJointId(jn);
+                int jidx_int = static_cast<int>(jidx);
+                int col = jidx_int - 2;
+                if (col >= 0 && (6 + col) < model_.nv && i < current_joint_state_.velocity.size()) {
+                    qd_[6 + col] = current_joint_state_.velocity[i];
+                }
+            }
+        }
+    }
+
+    // Generalized velocity misurata (usa velocità drone misurate + velocità giunti misurate)
+    v_gen_meas_.setZero();
+    v_gen_meas_.segment<3>(0) = vlin_base_local;
+    v_gen_meas_.segment<3>(3) = omega_base_local;
+    for (int k = 6; k < model_.nv; ++k) {
+        v_gen_meas_[k] = qd_[k];
+    }
 
     // Cinematica diretta per posa assoluta dell'end-effector
-    pinocchio::forwardKinematics(model_, data_, q_);
+    pinocchio::forwardKinematics(model_, data_, q_, v_gen_meas_);
     pinocchio::updateFramePlacements(model_, data_);
 
     const pinocchio::SE3& ee_placement = data_.oMf[ee_frame_id_];

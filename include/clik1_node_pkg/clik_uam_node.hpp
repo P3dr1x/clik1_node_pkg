@@ -10,6 +10,7 @@
 #include "geometry_msgs/msg/pose_array.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 #include "interbotix_xs_msgs/msg/joint_group_command.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
@@ -22,6 +23,7 @@
 // STL headers used in this header (member declarations)
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class ClikUamNode : public rclcpp::Node
@@ -36,6 +38,8 @@ private:
     void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
     void real_drone_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
     void gazebo_pose_callback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+    void gazebo_odometry_callback(const nav_msgs::msg::Odometry::SharedPtr msg);
+    void real_drone_twist_callback(const geometry_msgs::msg::Twist::SharedPtr msg);
     void joint_state_callback(const sensor_msgs::msg::JointState::SharedPtr msg);
     void desired_pose_callback(const geometry_msgs::msg::Pose::SharedPtr msg);
     void desired_velocity_callback(const geometry_msgs::msg::Twist::SharedPtr msg);
@@ -54,10 +58,18 @@ private:
     bool has_vehicle_local_position_ = false;
     bool has_vehicle_attitude_ = false;
     bool use_gazebo_pose_;
+    bool use_gz_odom_ = true;
 
     rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr gazebo_pose_sub_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr gazebo_odom_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr real_drone_twist_sub_;
     rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr desired_ee_global_pose_sub_;
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr desired_ee_velocity_sub_;
+
+    nav_msgs::msg::Odometry gazebo_odom_;
+    bool has_gazebo_odom_ = false;
+    geometry_msgs::msg::Twist real_drone_twist_;
+    bool has_real_drone_twist_ = false;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -70,6 +82,8 @@ private:
 
     Eigen::MatrixXd Jgen_;
     Eigen::VectorXd q_;
+    Eigen::VectorXd qd_;
+    Eigen::VectorXd v_gen_meas_;
     Eigen::VectorXd desired_ee_velocity_vec_;
     // LC solution state: weights and previous joint velocities (arm-only)
     Eigen::VectorXd W_diag_;         // diagonal weights for joints (size = n_arm)
@@ -85,6 +99,10 @@ private:
 
     sensor_msgs::msg::JointState current_joint_state_;
     bool has_current_joint_state_ = false;
+
+    // Per stimare le velocità giunti quando /joint_states non le fornisce
+    rclcpp::Time last_joint_state_time_;
+    std::unordered_map<std::string, double> prev_joint_positions_;
 
     std::vector<std::string> arm_joints_;
     // Indici di velocità per i giunti del braccio (ordine arm_joints_), precomputati una volta

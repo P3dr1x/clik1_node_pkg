@@ -2,7 +2,7 @@ import os  # Importa il modulo os per manipolare i percorsi di file
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, TimerAction
-from launch.event_handlers import OnProcessExit
+from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.substitutions import Command, PathJoinSubstitution, LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.substitutions import FindPackageShare
@@ -20,6 +20,7 @@ def generate_launch_description():
     use_sim = LaunchConfiguration('use_sim', default='true')
     use_sim_time = LaunchConfiguration('use_sim_time', default=True)
     real_system = LaunchConfiguration('real_system', default='false')
+    use_gz_odom = LaunchConfiguration('use_gz_odom', default='true')
     px4_repo_path = LaunchConfiguration('px4_repo_path', default=os.path.expanduser('~/PX4-Autopilot'))
     robot_model = LaunchConfiguration('robot_model', default='mobile_wx250s')
     robot_name = LaunchConfiguration('robot_name', default='mobile_wx250s')
@@ -128,6 +129,18 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Avvio Micro XRCE Agent in modalità UDP (SITL) con ritardo (solo quando NON si usa l'odometria di Gazebo)
+    microxrce_agent_proc = ExecuteProcess(
+        cmd=['MicroXRCEAgent', 'udp4', '-p', '8888'],
+        output='screen'
+    )
+
+    microxrce_agent = TimerAction(
+        period=10.0,
+        actions=[microxrce_agent_proc],
+        condition=UnlessCondition(use_gz_odom)
+    )
+
     # Pubblica la configurazione di sleep via CLI (una volta sola)
     sleep_pose_pub = ExecuteProcess(
         cmd=[
@@ -156,7 +169,30 @@ def generate_launch_description():
         name='real_drone_pose_pub',
         output='screen',
         parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
-        condition=IfCondition(real_system)
+        condition=UnlessCondition(use_gz_odom)
+    )
+
+    real_drone_vel_pub = Node(
+        package='clik1_node_pkg',
+        executable='real_drone_vel_pub',
+        name='real_drone_vel_pub',
+        output='screen',
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
+        condition=UnlessCondition(use_gz_odom)
+    )
+
+    # Avvia i nodi real_* almeno 10s dopo l'avvio di Micro XRCE Agent
+    start_real_nodes_after_agent = RegisterEventHandler(
+        event_handler=OnProcessStart(
+            target_action=microxrce_agent_proc,
+            on_start=[
+                TimerAction(period=10.0, actions=[
+                    # real_drone_pose_pub,
+                    real_drone_vel_pub,
+                ])
+            ]
+        ),
+        condition=UnlessCondition(use_gz_odom)
     )
 
     # Nodo CLIK in SITL: usa posa da Gazebo e pubblica comandi verso ros2_control
@@ -188,15 +224,17 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_name', default_value='mobile_wx250s', description='Nome del robot.'),
         DeclareLaunchArgument('xs_driver_logging_level', default_value='INFO', choices=['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'], description='Livello di log del driver XS.'),
         DeclareLaunchArgument('real_system', default_value='false', choices=['true','false'], description='Se true avvia il nodo real_drone_pose_pub e il broadcaster usa la posa reale.'),
+        DeclareLaunchArgument('use_gz_odom', default_value='true', choices=['true','false'], description='Se true usa l\'odometria di Gazebo; se false avvia i nodi real_drone_*'),
         # Be sure that MicroXRCEAgent is exposing PX4 topic on ROS2
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false'], description='Lancia RViz se true.'),
     px4_sitl,
+    microxrce_agent,
     bridge,
     robot_state_publisher,
     joint_state_broadcaster_spawner,
     arm_controller_spawner,
     world_to_base_link_broadcaster,
-    real_drone_pose_pub,
+    start_real_nodes_after_agent,
     # Dopo lo spawn di arm_controller, invia la sleep pose e avvia clik_uam_node dopo 5s
     RegisterEventHandler(
         event_handler=OnProcessExit(
