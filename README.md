@@ -27,7 +27,7 @@ sudo apt-get install ros-${ROS_DISTRO}-kinematics-interface-pinocchio
 
 ```bash
 git clone --recursive https://github.com/osqp/osqp
-git switch v0.6.3
+git checkout v0.6.3
 ```
 5. Then you need to install the **C++ wrapper for OSQP**. Follow the instructions at [this link](https://github.com/gbionics/osqp-eigen#%EF%B8%8F-build-from-source-advanced).
 
