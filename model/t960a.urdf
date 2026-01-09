@@ -551,7 +551,7 @@
   <joint name="drone_arm" type="fixed">
     <parent link="base_link"/>
     <child link="mobile_wx250s/base_link"/>
-    <origin rpy="3.14 0 0" xyz="0.4265 0 -0.063"/>
+    <origin rpy="3.14 0 0" xyz="0.4265 0 -0.0845"/>
   </joint>
 
   <!-- Tag per collegare ros2_control a Gazebo -->
