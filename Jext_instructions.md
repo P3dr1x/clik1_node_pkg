@@ -116,13 +116,14 @@ $$
 =
 \begin{bmatrix}
 \dot{x}_{ee,ref}+Ke \\
-K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t
+K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t - A_{KO,b}^{man}A_{b}^{-1}\mathbf{h}_{\text{UAM}}
 \end{bmatrix}
 $$
 
 where:
 -  $e$  is the end-effector position error,
 -  $K$  is a proportional gain,
+- $\mathbf{h}_{\text{UAM}}$ is the total momentum of the aerial manipulator system
 
 The final task vector is:
 
@@ -130,7 +131,7 @@ The final task vector is:
 $$
 \begin{bmatrix}
 \dot{x}_{ee,ref} + K\,e_{lin} \\
-K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t
+K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t - A_{KO,b}^{man}A_{b}^{-1}\mathbf{h}_{\text{UAM}}
 \end{bmatrix}
 $$
 
@@ -156,8 +157,6 @@ $$
 =
 \dot{x}_{ee,ref}+Ke
 $$.
-
-The error $e$ is computed using the `log6` function. 
 
 Add a parameter in order for the user to decide wether to use this or the $J_{ext}$ case.
 Define also weights for the two cost functions so that the user can decide wether to give priority to the kinematic tracking or the minimization of the reaction torque. 

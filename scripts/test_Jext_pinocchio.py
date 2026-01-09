@@ -489,6 +489,7 @@ def main():
     joints_log = []  # angoli giunti del braccio (ultimi nv-6)
     ee_p_log = []    # posizione end-effector
     p_des_log = []   # posizione desiderata dell'EE per confronto
+    h_uam_term_norm_log = []  # ||A_KO_b_man * Ab^{-1} * h_UAM|| (solo jext; 0 negli altri casi)
 
     # Parametri traiettoria circolare (WORLD): piano x-z, orientazione costante
     # Centro scelto per passare da p0 al tempo t=0 sul bordo lungo +X
@@ -630,6 +631,22 @@ def main():
 
         v_mom_task = K_O_man + dt * (np.cross(v_O_world, p_man) + tau_g)
 
+        # Termine aggiuntivo richiesto (Jext_instructions.md, "Desired Task Vector (redundant case)"):
+        #   - A_KO,b^man * Ab^{-1} * h_UAM
+        # dove h_UAM è il momento totale del sistema (6D, [lin; ang]).
+        h_uam_term = np.zeros(3)
+        if mode == "jext":
+            pin.computeCentroidalMomentum(model, data, q, v_full_prev)
+            h_uam = np.hstack(
+                [
+                    np.array(data.hg.linear).reshape(3),
+                    np.array(data.hg.angular).reshape(3),
+                ]
+            )
+            Ab_inv_h_uam = np.linalg.solve(Ab_reg, h_uam)
+            h_uam_term = (A_KO_b_man @ Ab_inv_h_uam)
+            v_mom_task = v_mom_task - h_uam_term
+
         # === Costo QP ===
         if mode == "jext":
             J_task = np.vstack([J_lin, J_mom])
@@ -732,6 +749,7 @@ def main():
         yaw_log.append(yaw)
         joints_log.append(np.array(q[-(model.nv-6):]))  # parte giunti (approssimazione)
         ee_p_log.append(p_ee)
+        h_uam_term_norm_log.append(float(np.linalg.norm(h_uam_term)))
 
         # Sleep opzionale per visualizzazione in tempo reale
         if args.realtime:
@@ -777,6 +795,19 @@ def main():
             pass
         plt.tight_layout()
         plt.show()
+
+        # Figura 2: norma del termine aggiuntivo ||A_KO_b_man * Ab^{-1} * h_UAM|| vs tempo
+        if len(h_uam_term_norm_log) == len(t_log) and len(t_log) > 1:
+            fig_term = plt.figure()
+            ax = fig_term.add_subplot(111)
+            ax.plot(t_log, h_uam_term_norm_log, label=r"$\|A_{KO,b}^{man} A_b^{-1} h_{UAM}\|$")
+            ax.set_xlabel('t [s]')
+            ax.set_ylabel('norma [SI]')
+            ax.set_title('Norma del termine h_UAM nel task di momento')
+            ax.grid(True)
+            ax.legend(loc='best')
+            plt.tight_layout()
+            plt.show()
     except Exception as e:
         print(f"Plot non disponibile: {e}")
 
