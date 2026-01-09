@@ -80,6 +80,16 @@ private:
     pinocchio::Data::Matrix6x J_;
     pinocchio::FrameIndex ee_frame_id_;
 
+    // Pinocchio model for the manipulator only (FreeFlyer + arm)
+    pinocchio::Model model_man_;
+    pinocchio::Data data_man_;
+    pinocchio::FrameIndex ee_frame_id_man_;
+    pinocchio::FrameIndex arm_base_frame_id_full_;
+    std::vector<int> idx_v_arm_man_;
+    std::vector<int> idx_q_arm_man_;
+    double m_man_tot_ = 0.0;
+    Eigen::Vector3d g_world_man_{Eigen::Vector3d::Zero()};
+
     Eigen::MatrixXd Jgen_;
     Eigen::VectorXd q_;
     Eigen::VectorXd qd_;
@@ -145,6 +155,13 @@ private:
     double qp_vel_max_default_ = 2.0;
     double kp_pos_ = 20.0;
     double kp_ori_ = 20.0;
+
+    // Weights for pose-mom formulation (redundant=false)
+    double w_kin_ = 10.0;
+    double w_mom_ = 1.0;
+
+    // Se true, include il termine -A_KO,b^man * Ab^{-1} * h_UAM nel task di momento (solo redundant=true)
+    bool use_h_uam_ = false;
 
     // Parametri runtime
     std::string robot_name_;

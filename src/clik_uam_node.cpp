@@ -15,8 +15,20 @@
 #include "pinocchio/algorithm/frames.hpp"
 #include "pinocchio/algorithm/kinematics.hpp"
 #include "pinocchio/algorithm/centroidal.hpp" // Centroidal Momentum Matrix (Ag)
+#include "pinocchio/algorithm/center-of-mass.hpp"
 #include "pinocchio/spatial/explog.hpp" // per log3 su SO(3)
 #include "ament_index_cpp/get_package_share_directory.hpp"
+
+namespace {
+inline Eigen::Matrix3d skew(const Eigen::Vector3d &v)
+{
+    Eigen::Matrix3d S;
+    S << 0.0, -v.z(), v.y(),
+         v.z(), 0.0, -v.x(),
+        -v.y(), v.x(), 0.0;
+    return S;
+}
+} // namespace
 
 
 ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()), tf_listener_(tf_buffer_)
@@ -60,6 +72,71 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     }
     ee_frame_id_ = model_.getFrameId("mobile_wx250s/ee_gripper_link");
     RCLCPP_INFO(this->get_logger(), "End-effector frame ID: %d", static_cast<int>(ee_frame_id_));
+
+    // Giunti controllati dal controller (gruppo "arm").
+    // Devono essere definiti PRIMA del precompute degli indici nel modello manipolatore.
+    arm_joints_ = {"waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"};
+
+    // Frame base braccio (punto di connessione O)
+    if (!model_.existFrame("mobile_wx250s/base_link")) {
+        RCLCPP_ERROR(this->get_logger(), "Frame 'mobile_wx250s/base_link' assente nel modello.");
+        rclcpp::shutdown();
+        return;
+    }
+    arm_base_frame_id_full_ = model_.getFrameId("mobile_wx250s/base_link");
+
+
+    // Carica modello del SOLO manipolatore (FreeFlyer + braccio) per il task di momento
+    {
+        const std::string urdf_man_filename = pkg_share + "/model/wx250s.urdf";
+        RCLCPP_INFO(this->get_logger(), "Caricamento modello manipolatore URDF da: %s", urdf_man_filename.c_str());
+        try {
+            pinocchio::urdf::buildModel(urdf_man_filename, pinocchio::JointModelFreeFlyer(), model_man_);
+            data_man_ = pinocchio::Data(model_man_);
+        } catch (const std::exception &e) {
+            RCLCPP_ERROR(this->get_logger(), "Errore nel caricamento del modello manipolatore URDF: %s", e.what());
+            rclcpp::shutdown();
+            return;
+        }
+
+        if (!model_man_.existFrame("mobile_wx250s/ee_gripper_link")) {
+            RCLCPP_ERROR(this->get_logger(), "Frame EE assente nel modello manipolatore: mobile_wx250s/ee_gripper_link");
+            rclcpp::shutdown();
+            return;
+        }
+        ee_frame_id_man_ = model_man_.getFrameId("mobile_wx250s/ee_gripper_link");
+
+        // Massa totale manipolatore (per tau_g)
+        m_man_tot_ = 0.0;
+        for (size_t i = 1; i < model_man_.inertias.size(); ++i) {
+            m_man_tot_ += static_cast<double>(model_man_.inertias[i].mass());
+        }
+        g_world_man_ = model_man_.gravity.linear();
+
+        // Precalcolo indici q/v nel modello manipolatore per gli stessi arm_joints_
+        const int n_arm = static_cast<int>(arm_joints_.size());
+        idx_v_arm_man_.resize(n_arm);
+        idx_q_arm_man_.resize(n_arm);
+        for (int i = 0; i < n_arm; ++i) {
+            const std::string &jname = arm_joints_[static_cast<size_t>(i)];
+            if (!model_man_.existJointName(jname)) {
+                RCLCPP_ERROR(this->get_logger(), "Joint '%s' non esiste nel modello manipolatore.", jname.c_str());
+                rclcpp::shutdown();
+                return;
+            }
+            const pinocchio::JointIndex jid = model_man_.getJointId(jname);
+            const int idx_v = static_cast<int>(model_man_.joints[jid].idx_v());
+            const int idx_q = static_cast<int>(model_man_.joints[jid].idx_q());
+            const int nq_j = static_cast<int>(model_man_.joints[jid].nq());
+            if (nq_j != 1) {
+                RCLCPP_ERROR(this->get_logger(), "Joint '%s' nel modello manipolatore ha nq!=1 (nq=%d)", jname.c_str(), nq_j);
+                rclcpp::shutdown();
+                return;
+            }
+            idx_v_arm_man_[i] = idx_v;
+            idx_q_arm_man_[i] = idx_q;
+        }
+    }
 
     // SOTTOSCRIZIONI STATO DRONE
     if (use_gazebo_pose_) {
@@ -141,10 +218,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     Jgen_.resize(6, model_.nv - 6);
     desired_ee_velocity_vec_.resize(6);
     desired_ee_velocity_vec_.setZero();
-    // Giunti controllati dal controller (gruppo "arm").
-    // Eventuali giunti del gripper vengono comunque letti da /joint_states e aggiornano q_,
-    // ma NON sono variabili del QP e NON vengono comandati.
-    arm_joints_ = {"waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"}; // in future they might be specified through yaml file
+    // Nota: arm_joints_ è già impostato sopra (prima del modello manipolatore).
 
     declare_parameter("k_err_x_", 20.0); // legacy (tenuto per compatibilità)
     declare_parameter("kp_pos", 20.0);
@@ -157,9 +231,21 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     declare_parameter("shoulder_weight", 15.0);
     declare_parameter("forearm_weight", 25.0);
     declare_parameter("wrist_weight", 25.0);
-    // Opzione per sfruttare ridondanza cinematica: segui solo la traiettoria di posizione (ignora orientazione)
-    this->declare_parameter<bool>("redundant", false);
+    // Opzione per sfruttare ridondanza cinematica:
+    // - true  -> Jext (jext) con task [EE lin; momento] (default)
+    // - false -> pose-mom con due costi pesati (tracking posa EE 6D + momento)
+    this->declare_parameter<bool>("redundant", true);
     redundant_ = this->get_parameter("redundant").as_bool();
+
+    // Pesi per la formulazione pose-mom (usati solo con redundant=false)
+    this->declare_parameter<double>("w_kin", 10.0);
+    this->declare_parameter<double>("w_mom", 1.0);
+    w_kin_ = this->get_parameter("w_kin").as_double();
+    w_mom_ = this->get_parameter("w_mom").as_double();
+
+    // Abilita/disabilita il termine basato sul momento totale h_UAM nel task di momento (solo redundant=true)
+    this->declare_parameter<bool>("use_h_uam", false);
+    use_h_uam_ = this->get_parameter("use_h_uam").as_bool();
     // Parametro per abilitare la null-space velocity qd_N = qd(k-1)
     this->declare_parameter<bool>("qd_N_prev", false);
     kp_pos_ = get_parameter("kp_pos").as_double();
@@ -496,6 +582,12 @@ void ClikUamNode::update()
         waiting_log_printed_ = false;
     }
 
+    // dt del controllo (serve sia per il task di momento che per i vincoli discretizzati del QP)
+    const rclcpp::Time now = this->now();
+    double dt = (now - last_update_time_).seconds();
+    last_update_time_ = now;
+    dt = std::clamp(dt, 1e-4, 0.02); // evita divisione per 0, max 20ms
+
     // 1. AGGIORNA STATO DEL ROBOT 
     // q_.setZero();
 
@@ -610,13 +702,18 @@ void ClikUamNode::update()
     Eigen::MatrixXd Ab = Ag.leftCols(6);                     // 6 x 6
     Eigen::MatrixXd Am = Ag.rightCols(model_.nv - 6);        // 6 x (nv-6)
 
+    // Regolarizzazione Ab (come nello script Python): Ab_reg = Ab + eps * I
+    const double eps_Ab = this->get_parameter("qp_eps_ab").as_double();
+    Eigen::Matrix<double, 6, 6> Ab_reg = Ab;
+    Ab_reg.diagonal().array() += eps_Ab;
+
     // Estrai i blocchi del Jacobiano dell'EE
     Eigen::MatrixXd J_b = J_.leftCols(6);
     Eigen::MatrixXd J_m = J_.rightCols(model_.nv - 6);
 
     // 4. CALCOLO JACOBIANO GENERALIZZATO tramite Ab, Am (Paper_MP Sec. 3.1)
     // Jgen = J_m - J_b * Ab^{-1} * Am
-    Eigen::MatrixXd Ab_inv_Am = Ab.ldlt().solve(Am); // risolve Ab * X = Am
+    Eigen::MatrixXd Ab_inv_Am = Ab_reg.ldlt().solve(Am); // risolve Ab_reg * X = Am
     Jgen_ = J_m - J_b * Ab_inv_Am;
 
     // Seleziona le colonne del Jacobiano generalizzato corrispondenti ai soli giunti del braccio
@@ -631,6 +728,122 @@ void ClikUamNode::update()
             Jgen_arm.col(i).setZero();
             RCLCPP_WARN(this->get_logger(), "Colonna Jgen per joint %s fuori range (idx_v=%d col=%d)",
                         arm_joints_[static_cast<size_t>(i)].c_str(), idx_v, col);
+        }
+    }
+
+    // ==== Task di momento manipolatore rispetto a O (mobile_wx250s/base_link) ====
+    // Calcola J_mom = (A_KO,b^man * Ab^{-1} * Am + A_KO,m^man) selezionando solo i giunti arm_joints_
+    Eigen::MatrixXd J_mom_arm(3, n_arm);
+    J_mom_arm.setZero();
+    Eigen::Vector3d v_mom_task = Eigen::Vector3d::Zero();
+    Eigen::Vector3d h_uam_term = Eigen::Vector3d::Zero();
+
+    {
+        // Costruisci stato (q_man, v_man) del manipolatore imponendo la posa di O dal modello completo
+        Eigen::VectorXd q_man(model_man_.nq);
+        Eigen::VectorXd v_man(model_man_.nv);
+        q_man.setZero();
+        v_man.setZero();
+
+        // Posa di O nel mondo dal modello completo
+        const pinocchio::SE3 &T_w_O = data_.oMf[arm_base_frame_id_full_];
+        q_man.segment<3>(0) = T_w_O.translation();
+        Eigen::Quaterniond q_O(T_w_O.rotation());
+        q_O.normalize();
+        q_man[3] = q_O.x();
+        q_man[4] = q_O.y();
+        q_man[5] = q_O.z();
+        q_man[6] = q_O.w();
+
+        // Copia posizioni giunti braccio per nome (ordine arm_joints_)
+        for (int i = 0; i < n_arm; ++i) {
+            const int iq_full = idx_q_arm_[i];
+            const int iq_man = idx_q_arm_man_[i];
+            if (iq_full >= 0 && iq_full < q_.size() && iq_man >= 0 && iq_man < q_man.size()) {
+                q_man[iq_man] = q_[iq_full];
+            }
+        }
+
+        // Velocità base del braccio nel frame LOCAL (coerente con JointModelFreeFlyer)
+        const pinocchio::Motion V_O_local = pinocchio::getFrameVelocity(model_, data_, arm_base_frame_id_full_, pinocchio::ReferenceFrame::LOCAL);
+        v_man.segment<3>(0) = V_O_local.linear();
+        v_man.segment<3>(3) = V_O_local.angular();
+
+        // Copia velocità giunti braccio (ordine arm_joints_)
+        for (int i = 0; i < n_arm; ++i) {
+            const int iv_full = idx_v_arm_[i];
+            const int iv_man = idx_v_arm_man_[i];
+            if (iv_full >= 0 && iv_full < v_gen_meas_.size() && iv_man >= 0 && iv_man < v_man.size()) {
+                v_man[iv_man] = v_gen_meas_[iv_full];
+            }
+        }
+
+        // Centroidal map e momentum del manipolatore
+        pinocchio::forwardKinematics(model_man_, data_man_, q_man, v_man);
+        pinocchio::centerOfMass(model_man_, data_man_, q_man, v_man, false);
+        pinocchio::computeCentroidalMap(model_man_, data_man_, q_man);
+        pinocchio::computeCentroidalMomentum(model_man_, data_man_, q_man, v_man);
+
+        const Eigen::MatrixXd &Ag_man = data_man_.Ag; // 6 x (6+n_arm_man)
+        const Eigen::MatrixXd A_p_man = Ag_man.topRows(3);
+        const Eigen::MatrixXd A_K_man = Ag_man.bottomRows(3);
+
+        // Trasporto: A_KO = A_K + skew(GmO) * A_p
+        const Eigen::Vector3d O_w = q_man.segment<3>(0);
+        const Eigen::Vector3d Gm_w = data_man_.com[0];
+        const Eigen::Vector3d GmO_w = (O_w - Gm_w);
+
+        Eigen::MatrixXd A_KO_man = A_K_man + skew(GmO_w) * A_p_man; // 3 x nv_man
+        Eigen::MatrixXd A_KO_b_man = A_KO_man.leftCols(6);          // 3 x 6
+
+        // Seleziona solo le colonne (giunti arm_joints_) per A_KO_m
+        Eigen::MatrixXd A_KO_m_arm(3, n_arm);
+        for (int i = 0; i < n_arm; ++i) {
+            const int iv_man = idx_v_arm_man_[i];
+            if (iv_man >= 6 && iv_man < A_KO_man.cols()) {
+                A_KO_m_arm.col(i) = A_KO_man.col(iv_man);
+            } else {
+                A_KO_m_arm.col(i).setZero();
+            }
+        }
+
+        // Ab^{-1} * Am selezionato sulle colonne dei giunti arm
+        Eigen::MatrixXd Ab_inv_Am_arm(6, n_arm);
+        for (int i = 0; i < n_arm; ++i) {
+            const int iv_full = idx_v_arm_[i];
+            const int col = iv_full - 6;
+            if (col >= 0 && col < Ab_inv_Am.cols()) {
+                Ab_inv_Am_arm.col(i) = Ab_inv_Am.col(col);
+            } else {
+                Ab_inv_Am_arm.col(i).setZero();
+            }
+        }
+
+        J_mom_arm.noalias() = A_KO_b_man * Ab_inv_Am_arm + A_KO_m_arm;
+
+        // Momentum task RHS: K_O + dt*(v_O x p_man + tau_g)
+        const Eigen::Vector3d p_man = data_man_.hg.linear();
+        const Eigen::Vector3d K_Gm_man = data_man_.hg.angular();
+        const Eigen::Vector3d K_O_man = K_Gm_man + GmO_w.cross(p_man);
+
+        const pinocchio::Motion V_O_world = pinocchio::getFrameVelocity(model_, data_, arm_base_frame_id_full_, pinocchio::ReferenceFrame::WORLD);
+        const Eigen::Vector3d v_O_world = V_O_world.linear();
+
+        const Eigen::Vector3d Fg_man = m_man_tot_ * g_world_man_;
+        const Eigen::Vector3d tau_g = GmO_w.cross(Fg_man);
+
+        v_mom_task = K_O_man + dt * (v_O_world.cross(p_man) + tau_g);
+
+        // Termine opzionale basato sul momento totale h_UAM: -A_KO,b^man * Ab^{-1} * h_UAM
+        // (abilitabile anche nel caso pose-mom con redundant=false)
+        if (use_h_uam_) {
+            pinocchio::computeCentroidalMomentum(model_, data_, q_, v_gen_meas_);
+            Eigen::Matrix<double, 6, 1> h_uam;
+            h_uam.segment<3>(0) = data_.hg.linear();
+            h_uam.segment<3>(3) = data_.hg.angular();
+            const Eigen::Matrix<double, 6, 1> Ab_inv_h_uam = Ab_reg.ldlt().solve(h_uam);
+            h_uam_term = A_KO_b_man * Ab_inv_h_uam;
+            v_mom_task = v_mom_task - h_uam_term;
         }
     }
 
@@ -690,11 +903,6 @@ void ClikUamNode::update()
     //   (q_min - q_arm)/dt <= x <= (q_max - q_arm)/dt
     // Intersezione bounds velocità e bounds di posizione (via dt).
 
-    const rclcpp::Time now = this->now();
-    double dt = (now - last_update_time_).seconds();
-    last_update_time_ = now;
-    dt = std::clamp(dt, 1e-4, 0.02); // evita divisione per 0, max 20ms
-
     // Stato misurato giunti (ordine arm_joints_) - buffer preallocato
     qp_q_arm_meas_.setZero();
     for (int i = 0; i < n_arm; ++i) {
@@ -702,27 +910,48 @@ void ClikUamNode::update()
         if (iq >= 0 && iq < q_.size()) qp_q_arm_meas_[i] = q_[iq];
     }
 
-    // Task selection (3D position-only se redundant_)
-    const int task_dim = redundant_ ? 3 : 6;
-    qp_J_task_.topRows(task_dim) = redundant_ ? Jgen_arm.topRows(3) : Jgen_arm;
+    // ==== QP cost: due casi ====
+    // redundant_=true  (jext): minimize || [Jgen_lin; J_mom] qdot - [v_lin; v_mom] ||
+    // redundant_=false (pose-mom): minimize w_kin*||Jgen qdot - v_ee_6d||^2 + w_mom*||J_mom qdot - v_mom||^2
 
     // v_ee_des = v_ref + Kp*e  (Kp separati pos/orient)
-    qp_v_task_.setZero();
-    qp_v_task_.head<3>() = desired_ee_velocity_vec_.head<3>() + kp_pos_ * e_pos;
-    qp_v_task_.tail<3>() = desired_ee_velocity_vec_.tail<3>() + kp_ori_ * e_ang;
+    Eigen::Matrix<double, 6, 1> v_ee_task_6d;
+    v_ee_task_6d.segment<3>(0) = desired_ee_velocity_vec_.segment<3>(0) + kp_pos_ * e_pos;
+    v_ee_task_6d.segment<3>(3) = desired_ee_velocity_vec_.segment<3>(3) + kp_ori_ * e_ang;
 
-    // Viste (no alloc) ridotte a task_dim
-    const auto J_task = qp_J_task_.topRows(task_dim);
-    const auto v_task = qp_v_task_.head(task_dim);
+    qp_P_dense_.setZero();
+    qp_gradient_.setZero();
 
-    // P_dense = J^T J + lambda I (W = I)
-    qp_P_dense_.noalias() = J_task.transpose() * J_task;
-    qp_P_dense_.diagonal().array() += qp_lambda_reg_;
-    // Symmetrize numerically
-    qp_P_dense_ = 0.5 * (qp_P_dense_ + qp_P_dense_.transpose());
+    if (redundant_) {
+        // Stack Jext (6 x n): [Jgen_lin (3); J_mom (3)]
+        qp_J_task_.topRows(3) = Jgen_arm.topRows(3);
+        qp_J_task_.bottomRows(3) = J_mom_arm;
+        qp_v_task_.head<3>() = v_ee_task_6d.head<3>();
+        qp_v_task_.tail<3>() = v_mom_task;
 
-    // gradient = -J^T v
-    qp_gradient_.noalias() = -J_task.transpose() * v_task;
+        const auto J_task = qp_J_task_.topRows(6);
+        const auto v_task = qp_v_task_.head(6);
+
+        qp_P_dense_.noalias() = J_task.transpose() * J_task;
+        qp_P_dense_.diagonal().array() += qp_lambda_reg_;
+        qp_P_dense_ = 0.5 * (qp_P_dense_ + qp_P_dense_.transpose());
+        qp_gradient_.noalias() = -J_task.transpose() * v_task;
+    } else {
+        // Due contributi separati e pesati (pose-mom)
+        const double w_kin = std::max(0.0, w_kin_);
+        const double w_mom = std::max(0.0, w_mom_);
+
+        const Eigen::MatrixXd &J1 = Jgen_arm; // 6 x n
+        const Eigen::VectorXd b1 = v_ee_task_6d;
+        const Eigen::MatrixXd &J2 = J_mom_arm; // 3 x n
+        const Eigen::Vector3d b2 = v_mom_task;
+
+        qp_P_dense_.noalias() = (w_kin * (J1.transpose() * J1)) + (w_mom * (J2.transpose() * J2));
+        qp_P_dense_.diagonal().array() += qp_lambda_reg_;
+        qp_P_dense_ = 0.5 * (qp_P_dense_ + qp_P_dense_.transpose());
+
+        qp_gradient_.noalias() = -((w_kin * (J1.transpose() * b1)) + (w_mom * (J2.transpose() * b2)));
+    }
 
     // Bounds l/u
     for (int i = 0; i < n_arm; ++i) {
@@ -745,7 +974,7 @@ void ClikUamNode::update()
         qp_u_[i] = u_i;
     }
 
-    // Salvaguardia fattibilità: se l>u forza l=u (come nello script Python)
+    // Salvaguardia fattibilità: se l>u forza l=u 
     for (int i = 0; i < n_arm; ++i) {
         if (qp_l_[i] > qp_u_[i]) {
             qp_l_[i] = qp_u_[i];
@@ -804,11 +1033,10 @@ void ClikUamNode::update()
             oss_tot << qp_solution_[i] << (i + 1 < n_arm ? ", " : "");
         }
         oss_tot << "]";
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 200, "%s", oss_tot.str().c_str());
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 100, "%s", oss_tot.str().c_str());
     }
 
     // 8. Integrazione diretta delle velocità QP -> comandi posizione giunti
-    // (senza separare IK/feedback, come richiesto)
     const bool need_reinit = (!have_desired_msg_) || ((this->now() - last_desired_msg_time_).seconds() > desired_timeout_sec_);
     if (!arm_cmd_initialized_ || need_reinit) {
         arm_cmd_pos_.assign(arm_joints_.size(), 0.0);
