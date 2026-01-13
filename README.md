@@ -143,7 +143,7 @@ ros2 run clik1_node_pkg planner
 
 The algorithm computes in real-time the reference velocities for manipulators motors in order to get the EE to complete the task planned through the `planner` node. This is done solving a QP problem at each timestep:
 
-$$\dot{\mathbf{q}} = \text{argmin} \| [\mathbf{J}_{\text{gen}}]\dot{\mathbf{q}}-\mathbf{\nu}_{\text{e,des}} \|$$
+$$\dot{\mathbf{q}} = \text{argmin} \| [\mathbf{J}]\dot{\mathbf{q}}-\mathbf{\nu}_{\text{e,des}} \|$$
 
 $$
 \text{s.t. }\quad
@@ -154,13 +154,13 @@ $$
 
 where:
 
-- $[\mathbf{J}_{\text{gen}}]$ is the **Generalized Jacobian matrix**.
+- $[\mathbf{J}]$ is the **manipulator Jacobian matrix** (classical Jacobian).
 - $`\mathbf{\nu}_{\text{e,des}}=\mathbf{\nu}_{\text{e,ref}}+[\mathbf{K}]\mathbf{e}_x`$ is the EE desired twist
 - $[\mathbf{K}]$ is the gain matrix.
 - $`\mathbf{e}_x`$ is EE task-space error vector. It is computed as $`\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})`$.
 
 For more info check the papers (please consider citing):
 
-- [Pasetto, A.; Vyas, Y.; Cocuzza, S. Zero Reaction Torque Trajectory Tracking of an Aerial Manipulator through Extended Generalized Jacobian. Appl. Sci. 2022, 12, 12254](https://doi.org/10.3390/app122312254)
+- [Pasetto, A.; Vyas, Y.; Cocuzza, S. Appl. Sci. 2022, 12, 12254](https://doi.org/10.3390/app122312254)
 
 - [Pedrocco, M.; Pasetto, A.; Fanti, G.; Benato, A.; Cocuzza, S. Trajectory Tracking Control of an Aerial Manipulator in the Presence of Disturbances and Model Uncertainties. Appl. Sci. 2024, 14, 2512](https://doi.org/10.3390/app14062512)

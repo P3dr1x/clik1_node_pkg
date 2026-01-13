@@ -90,7 +90,6 @@ private:
     double m_man_tot_ = 0.0;
     Eigen::Vector3d g_world_man_{Eigen::Vector3d::Zero()};
 
-    Eigen::MatrixXd Jgen_;
     Eigen::VectorXd q_;
     Eigen::VectorXd qd_;
     Eigen::VectorXd v_gen_meas_;

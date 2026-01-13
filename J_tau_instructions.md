@@ -2,20 +2,20 @@
 
 ## Context
 
-This project implements a **Closed-Loop Inverse Kinematics (CLIK)** controller for an **aerial manipulator** composed of:
+This project implements a **QP-based Kinematic** controller for an **aerial manipulator** composed of:
 - a free-flying base (UAV / drone),
 - a serial robotic arm mounted underneath.
 
 The control is formulated using:
-- the **Centroidal Momentum Matrix (CMM)**,
-- an **extended Jacobian (J_ext)**,
+- the **Momentum Matrix (MM)**,
+- the **Jacobian matrix (J)**,
 - and a **momentum-based task applied only to the manipulator subsystem**.
 
-The base is not directly actuated by the CLIK controller and is eliminated through dynamic consistency.
+The base is not directly actuated by the controller and is eliminated through dynamic consistency.
 
 ---
 
-## Constraint to stack to the Generalized Jacobian formula 
+## Constraint to stack to the Jacobian formula 
 
 The hard constraint equation is:
 
@@ -97,13 +97,13 @@ The extended Jacobian is defined as:
 $$
 J_{ext} =
 \begin{bmatrix}
-J_{gen,lin} \\
+J_{m,lin} \\
 A_{KO,b}^{man} A_{b}^{-1} A_{m} + A_{KO,m}^{man}
 \end{bmatrix}
 $$
 
 where:
-- $ J_{gen,lin} $ is the **linear part of the generalized Jacobian** mapping manipulator joint velocities to end-effector linear velocity.
+- $ J_{m,lin} $ is the **linear part of the manipulator Jacobian** mapping manipulator joint velocities to end-effector linear velocity.
 
 ---
 
@@ -146,9 +146,9 @@ embedded into a **QP** with joint limits and velocity bounds.
 
 ## Control Problem Formulation (EE position+orientation tracking case)
 
-In this case I would like to track also a reference end-effector orientation trajectory (like it is done in `test2_Jgen_pinocchio`). So I would like to split two cost function. I would like to solve the QP problem:
+In this case I would like to track also a reference end-effector orientation trajectory. So I would like to split two cost function. I would like to solve the QP problem:
 
-$\min\limits_{\dot{q}_m} \ ( \| J_{gen}\,\dot{q}_m - \dot{x}_{ee,des} \|_{W_1} + \|(A_{KO,b}^{man} A_{b}^{-1} A_{m} + A_{KO,m}^{man})\dot{q}_m  - (K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t) \|_{W_2})$
+$\min\limits_{\dot{q}_m} \ ( \| J\,\dot{q}_m - \dot{x}_{ee,des} \|_{W_1} + \|(A_{KO,b}^{man} A_{b}^{-1} A_{m} + A_{KO,m}^{man})\dot{q}_m  - (K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t) \|_{W_2})$
 
 subject to the usual velocity and joint constraints. In this case we consider all the rows of the $J_{gen}$ matrix and of the $\dot{x}_{ee,des}$ vector. $\dot{x}_{ee,des}$ is defined as:
 
@@ -161,19 +161,6 @@ $$.
 Add a parameter in order for the user to decide wether to use this or the $J_{ext}$ case.
 Define also weights for the two cost functions so that the user can decide wether to give priority to the kinematic tracking or the minimization of the reaction torque. 
 
-## Control Problem Formulation (minimization of reaction torque with kinematics as constraint)
-
-I would like also to formulate the control problem in another way in the `test_reaction_torque.py` script. I would like to minimize the momentum cost function that has been used in the previous script using the kinematics equation as equality constraint. So the problem is formulated as:
-
-$$\min\limits_{\dot{q}_m} \|(A_{KO,b}^{man} A_{b}^{-1} A_{m} + A_{KO,m}^{man})\dot{q}_m  - (K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t) \|$$
-
-$$\text{s.t.} \qquad [J_{gen}]\dot{q}_m=\dot{x}_{ee,des}$$
-
-and the other inequality constraints related to arm joint limits. 
-
-Define also here two cases:
-- one in which the kinematic constraint is on both posiiton and orientation of the end-effector (full 6D tracking of EE pose).
-- one in which the kinematic constraint is only on EE position.
 
 
 ---

@@ -215,7 +215,6 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     v_gen_meas_.resize(model_.nv);
     v_gen_meas_.setZero();
     J_.resize(6, model_.nv);
-    Jgen_.resize(6, model_.nv - 6);
     desired_ee_velocity_vec_.resize(6);
     desired_ee_velocity_vec_.setZero();
     // Nota: arm_joints_ è già impostato sopra (prima del modello manipolatore).
@@ -707,26 +706,23 @@ void ClikUamNode::update()
     Eigen::Matrix<double, 6, 6> Ab_reg = Ab;
     Ab_reg.diagonal().array() += eps_Ab;
 
-    // Estrai i blocchi del Jacobiano dell'EE
-    Eigen::MatrixXd J_b = J_.leftCols(6);
+    // Estrai il blocco del Jacobiano dell'EE relativo ai soli DoF del manipolatore (base esclusa)
     Eigen::MatrixXd J_m = J_.rightCols(model_.nv - 6);
 
-    // 4. CALCOLO JACOBIANO GENERALIZZATO tramite Ab, Am (Paper_MP Sec. 3.1)
-    // Jgen = J_m - J_b * Ab^{-1} * Am
+    // Precalcolo Ab^{-1} * Am (serve per il task di momento, non per il tracking cinematica)
     Eigen::MatrixXd Ab_inv_Am = Ab_reg.ldlt().solve(Am); // risolve Ab_reg * X = Am
-    Jgen_ = J_m - J_b * Ab_inv_Am;
 
-    // Seleziona le colonne del Jacobiano generalizzato corrispondenti ai soli giunti del braccio
+    // Seleziona le colonne del Jacobiano (classico) corrispondenti ai soli giunti del braccio
     const int n_arm = static_cast<int>(arm_joints_.size());
-    Eigen::MatrixXd Jgen_arm(6, n_arm);
+    Eigen::MatrixXd Jm_arm(6, n_arm);
     for (int i = 0; i < n_arm; ++i) {
         const int idx_v = idx_v_arm_[i];
         const int col = idx_v - 6; // rimuovi i 6 DoF di base
-        if (col >= 0 && col < Jgen_.cols()) {
-            Jgen_arm.col(i) = Jgen_.col(col);
+        if (col >= 0 && col < J_m.cols()) {
+            Jm_arm.col(i) = J_m.col(col);
         } else {
-            Jgen_arm.col(i).setZero();
-            RCLCPP_WARN(this->get_logger(), "Colonna Jgen per joint %s fuori range (idx_v=%d col=%d)",
+            Jm_arm.col(i).setZero();
+            RCLCPP_WARN(this->get_logger(), "Colonna J_m per joint %s fuori range (idx_v=%d col=%d)",
                         arm_joints_[static_cast<size_t>(i)].c_str(), idx_v, col);
         }
     }
@@ -911,8 +907,9 @@ void ClikUamNode::update()
     }
 
     // ==== QP cost: due casi ====
-    // redundant_=true  (jext): minimize || [Jgen_lin; J_mom] qdot - [v_lin; v_mom] ||
-    // redundant_=false (pose-mom): minimize w_kin*||Jgen qdot - v_ee_6d||^2 + w_mom*||J_mom qdot - v_mom||^2
+    // Tracking cinematica basato su Jacobiano classico del manipolatore (J_m).
+    // redundant_=true  (jext): minimize || [Jm_lin; J_mom] qdot - [v_lin; v_mom] ||
+    // redundant_=false (pose-mom): minimize w_kin*||Jm qdot - v_ee_6d||^2 + w_mom*||J_mom qdot - v_mom||^2
 
     // v_ee_des = v_ref + Kp*e  (Kp separati pos/orient)
     Eigen::Matrix<double, 6, 1> v_ee_task_6d;
@@ -923,8 +920,8 @@ void ClikUamNode::update()
     qp_gradient_.setZero();
 
     if (redundant_) {
-        // Stack Jext (6 x n): [Jgen_lin (3); J_mom (3)]
-        qp_J_task_.topRows(3) = Jgen_arm.topRows(3);
+        // Stack Jext (6 x n): [Jm_lin (3); J_mom (3)]
+        qp_J_task_.topRows(3) = Jm_arm.topRows(3);
         qp_J_task_.bottomRows(3) = J_mom_arm;
         qp_v_task_.head<3>() = v_ee_task_6d.head<3>();
         qp_v_task_.tail<3>() = v_mom_task;
@@ -941,7 +938,7 @@ void ClikUamNode::update()
         const double w_kin = std::max(0.0, w_kin_);
         const double w_mom = std::max(0.0, w_mom_);
 
-        const Eigen::MatrixXd &J1 = Jgen_arm; // 6 x n
+        const Eigen::MatrixXd &J1 = Jm_arm; // 6 x n
         const Eigen::VectorXd b1 = v_ee_task_6d;
         const Eigen::MatrixXd &J2 = J_mom_arm; // 3 x n
         const Eigen::Vector3d b2 = v_mom_task;
