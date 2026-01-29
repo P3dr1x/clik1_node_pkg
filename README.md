@@ -141,26 +141,89 @@ ros2 run clik1_node_pkg planner
 
 ## Mathematics
 
-The algorithm computes in real-time the reference velocities for manipulators motors in order to get the EE to complete the task planned through the `planner` node. This is done solving a QP problem at each timestep:
+The controller computes in real-time the **manipulator joint velocity command** $\dot{\mathbf{q}}_m$ in order to track a desired end-effector (EE) trajectory while also reducing the **reaction torque** between the floating base and the manipulator through a momentum-based task.
 
-$$\dot{\mathbf{q}} = \text{argmin} \| [\mathbf{J}]\dot{\mathbf{q}}-\mathbf{\nu}_{\text{e,des}} \|$$
+At each control timestep, a QP is solved with joint velocity bounds and (discretized) joint position bounds.
+
+### Formulation A (Extended Jacobian, `redundant:=true`)
+
+In this mode the controller stacks the kinematic tracking (EE linear velocity) and the momentum task into a single least-squares objective:
+
+$$\dot{\mathbf{q}}_m = \operatorname*{argmin}_{\dot{\mathbf{q}}_m}\ \left\|\mathbf{J}_{\text{ext}}\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{\text{e,des}}\right\|$$
+
+with:
 
 $$
-\text{s.t. }\quad
-\begin{cases}
-\dot{\mathbf{q}}_{\min}\le \dot{\mathbf{q}}  \le \dot{\mathbf{q}}_{\max} \\
-\dfrac{\dot{\mathbf{q}}_{\min}-q}{\Delta t}\le \dot{\mathbf{q}} \le \dfrac{\dot{\mathbf{q}}_{\max}-q}{\Delta t}
-\end{cases}$$
+\mathbf{J}_{\text{ext}}=
+\begin{bmatrix}
+\mathbf{J}_{m,\text{lin}}\\
+\left(\mathbf{A}_{KO,b}^{\text{man}}\,\mathbf{A}_b^{-1}\,\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right)
+\end{bmatrix}
+$$
+
+and a stacked desired task vector:
+
+$$
+\dot{\mathbf{\nu}}_{\text{des}}=
+\begin{bmatrix}
+\dot{\mathbf{\nu}}_{e,\text{ref}}+\mathbf{K}\,\mathbf{e}_{\text{lin}}\\
+\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t)
+\end{bmatrix}
+$$
+
+### Formulation B (`redundant:=false`)
+
+In this mode the controller tracks the full EE pose (linear + angular) and adds the momentum task as a second weighted least-squares term:
+
+$$
+\dot{\mathbf{q}}_m = \operatorname*{argmin}_{\dot{\mathbf{q}}_m}
+\left(\left\|\mathbf{J}_m\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
++\left\|\mathbf{M}\,\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
+$$
 
 where:
 
-- $[\mathbf{J}]$ is the **manipulator Jacobian matrix** (classical Jacobian).
-- $`\mathbf{\nu}_{\text{e,des}}=\mathbf{\nu}_{\text{e,ref}}+[\mathbf{K}]\mathbf{e}_x`$ is the EE desired twist
-- $[\mathbf{K}]$ is the gain matrix.
-- $`\mathbf{e}_x`$ is EE task-space error vector. It is computed as $`\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})`$.
+$$\dot{\mathbf{\nu}}_{ee,\text{des}}=\dot{\mathbf{\nu}}_{ee,\text{ref}}+\mathbf{K}\,\mathbf{e}$$
+
+$$\mathbf{M}=\left(\mathbf{A}_{KO,b}^{\text{man}}\,\mathbf{A}_b^{-1}\,\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right),\qquad
+\mathbf{b}=\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t
+$$
+
+### Constraints (both modes)
+
+$$
+{s.t. }\quad
+\begin{cases}
+\dot{\mathbf{q}}_{m,\min}\le \dot{\mathbf{q}}_m \le \dot{\mathbf{q}}_{m,\max} \\
+\dfrac{\mathbf{q}_{m,\min}-\mathbf{q}_m}{\Delta t}\le \dot{\mathbf{q}}_m \le \dfrac{\mathbf{q}_{m,\max}-\mathbf{q}_m}{\Delta t}
+\end{cases}
+$$
+
+where:
+
+- $\dot{\mathbf{q}}_m$ is the vector of **manipulator joint velocities** (the only decision variables of the QP).
+- $\Delta t$ is the controller timestep.
+
+- $\mathbf{J}_{m,\text{lin}}$ is the **linear part** of the manipulator Jacobian mapping $\dot{\mathbf{q}}_m$ to EE linear velocity.
+- $\mathbf{J}_m$ is the **full** manipulator Jacobian (linear + angular) mapping $\dot{\mathbf{q}}_m$ to EE twist.
+
+- $\dot{\mathbf{\nu}}_{ee,\text{ref}}$ is the feedforward/reference EE twist from the planner.
+- $\mathbf{e}$ is the EE **6D** task-space error (position + orientation).
+- $\mathbf{K}$ is the proportional gain matrix (built from `kp_pos`, `kp_ori`).
+
+- $\mathbf{A}_b$ and $\mathbf{A}_m$ are the base and manipulator blocks of the **UAM Centroidal Momentum Matrix** $\mathbf{A}$, i.e. $\mathbf{A}=[\mathbf{A}_b\ \mathbf{A}_m]$.
+- $\mathbf{A}_{KO,b}^{\text{man}}$ and $\mathbf{A}_{KO,m}^{\text{man}}$ are the base/manipulator blocks of the **manipulator momentum mapping** that relates generalized velocities to the manipulator angular momentum about the connection point $O$.
+
+- $\mathbf{K}_O^{\text{man}}(t_k)$ is the **manipulator angular momentum** about the drone–manipulator connection point $O$ at time $t_k$.
+- $\mathbf{p}_{\text{man}}$ is the **manipulator linear momentum**.
+- $\mathbf{v}_O$ is the linear velocity of the connection point $O$.
+- $\boldsymbol{\tau}_g$ is the gravity torque acting on the manipulator.
+- The reaction torque term $\boldsymbol{\tau}_R$ is set to zero (the goal is to minimize reaction torque).
+
+- $\mathbf{W}_1$ and $\mathbf{W}_2$ are the weight matrices that trade off between kinematic tracking and momentum task (implemented via scalar parameters `w_kin` and `w_mom`).
 
 For more info check the papers (please consider citing):
 
-- [Pasetto, A.; Vyas, Y.; Cocuzza, S. Appl. Sci. 2022, 12, 12254](https://doi.org/10.3390/app122312254)
+- [Pasetto, A.; Vyas, Y.; Cocuzza, S. Zero Reaction Torque Trajectory Tracking of an Aerial Manipulator through Extended Generalized Jacobian. Appl. Sci. 2022, 12, 12254](https://doi.org/10.3390/app122312254)
 
 - [Pedrocco, M.; Pasetto, A.; Fanti, G.; Benato, A.; Cocuzza, S. Trajectory Tracking Control of an Aerial Manipulator in the Presence of Disturbances and Model Uncertainties. Appl. Sci. 2024, 14, 2512](https://doi.org/10.3390/app14062512)
