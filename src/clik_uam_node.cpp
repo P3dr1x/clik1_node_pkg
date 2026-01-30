@@ -228,19 +228,19 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     declare_parameter("shoulder_weight", 15.0);
     declare_parameter("forearm_weight", 25.0);
     declare_parameter("wrist_weight", 25.0);
-    // Opzione per sfruttare ridondanza cinematica:
-    // - true  -> Jext (jext) con task [EE lin; momento] (default)
-    // - false -> pose-mom con due costi pesati (tracking posa EE 6D + momento)
+    // Opzione per gestire il tracking EE:
+    // - redundant=true  -> tracking solo POSIZIONE EE (prime 3 righe del Jacobiano)
+    // - redundant=false -> tracking POSA EE 6D (Jacobiano completo 6xN)
     this->declare_parameter<bool>("redundant", true);
     redundant_ = this->get_parameter("redundant").as_bool();
 
-    // Pesi per la formulazione pose-mom (usati solo con redundant=false)
-    this->declare_parameter<double>("w_kin", 10.0);
+    // Pesi per le due funzioni di costo (usati sempre)
+    this->declare_parameter<double>("w_kin", 1.0);
     this->declare_parameter<double>("w_mom", 1.0);
     w_kin_ = this->get_parameter("w_kin").as_double();
     w_mom_ = this->get_parameter("w_mom").as_double();
 
-    // Abilita/disabilita il termine basato sul momento totale h_UAM nel task di momento (solo redundant=true)
+    // Abilita/disabilita il termine basato sul momento totale h_UAM nel task di momento
     this->declare_parameter<bool>("use_h_uam", false);
     use_h_uam_ = this->get_parameter("use_h_uam").as_bool();
     // Parametro per abilitare la null-space velocity qd_N = qd(k-1)
@@ -903,10 +903,11 @@ void ClikUamNode::update()
         if (iq >= 0 && iq < q_.size()) qp_q_arm_meas_[i] = q_[iq];
     }
 
-    // ==== QP cost: due casi ====
-    // Tracking cinematica basato su Jacobiano classico del manipolatore (J_m).
-    // redundant_=true  (jext): minimize || [Jm_lin; J_mom] qdot - [v_lin; v_mom] ||
-    // redundant_=false (pose-mom): minimize w_kin*||Jm qdot - v_ee_6d||^2 + w_mom*||J_mom qdot - v_mom||^2
+    // ==== QP cost: sempre due funzioni di costo (tracking cinematica + momento) ====
+    // minimize: w_kin * || J_kin * qdot - v_kin ||^2 + w_mom * || J_mom * qdot - v_mom ||^2
+    // con:
+    // - redundant_=true  -> J_kin = Jm_arm.topRows(3) (tracking posizione)
+    // - redundant_=false -> J_kin = Jm_arm            (tracking posa 6D)
 
     // v_ee_des = v_ref + k_err*e  (k_err unico per pos/orient)
     Eigen::Matrix<double, 6, 1> v_ee_task_6d;
@@ -916,29 +917,29 @@ void ClikUamNode::update()
     qp_P_dense_.setZero();
     qp_gradient_.setZero();
 
+    // Due contributi separati e pesati.
+    // Nota: ponendo w_mom=0.0 si ottiene il controllo puramente cinematico (QP-Jgen/classico).
+    const double w_kin = std::max(0.0, w_kin_);
+    const double w_mom = std::max(0.0, w_mom_);
+
     if (redundant_) {
-        // Stack Jext (6 x n): [Jm_lin (3); J_mom (3)]
-        qp_J_task_.topRows(3) = Jm_arm.topRows(3);
-        qp_J_task_.bottomRows(3) = J_mom_arm;
-        qp_v_task_.head<3>() = v_ee_task_6d.head<3>();
-        qp_v_task_.tail<3>() = v_mom_task;
+        // Tracking solo posizione (3D)
+        const Eigen::MatrixXd J1 = Jm_arm.topRows(3);           // 3 x n
+        const Eigen::Vector3d b1 = v_ee_task_6d.head<3>();      // 3
+        const Eigen::MatrixXd &J2 = J_mom_arm;                  // 3 x n
+        const Eigen::Vector3d &b2 = v_mom_task;                 // 3
 
-        const auto J_task = qp_J_task_.topRows(6);
-        const auto v_task = qp_v_task_.head(6);
-
-        qp_P_dense_.noalias() = J_task.transpose() * J_task;
+        qp_P_dense_.noalias() = (w_kin * (J1.transpose() * J1)) + (w_mom * (J2.transpose() * J2));
         qp_P_dense_.diagonal().array() += qp_lambda_reg_;
         qp_P_dense_ = 0.5 * (qp_P_dense_ + qp_P_dense_.transpose());
-        qp_gradient_.noalias() = -J_task.transpose() * v_task;
-    } else {
-        // Due contributi separati e pesati (pose-mom)
-        const double w_kin = std::max(0.0, w_kin_);
-        const double w_mom = std::max(0.0, w_mom_);
 
-        const Eigen::MatrixXd &J1 = Jm_arm; // 6 x n
-        const Eigen::VectorXd b1 = v_ee_task_6d;
-        const Eigen::MatrixXd &J2 = J_mom_arm; // 3 x n
-        const Eigen::Vector3d b2 = v_mom_task;
+        qp_gradient_.noalias() = -((w_kin * (J1.transpose() * b1)) + (w_mom * (J2.transpose() * b2)));
+    } else {
+        // Tracking posa 6D
+        const Eigen::MatrixXd &J1 = Jm_arm;                     // 6 x n
+        const Eigen::Matrix<double, 6, 1> &b1 = v_ee_task_6d;    // 6
+        const Eigen::MatrixXd &J2 = J_mom_arm;                  // 3 x n
+        const Eigen::Vector3d &b2 = v_mom_task;                 // 3
 
         qp_P_dense_.noalias() = (w_kin * (J1.transpose() * J1)) + (w_mom * (J2.transpose() * J2));
         qp_P_dense_.diagonal().array() += qp_lambda_reg_;

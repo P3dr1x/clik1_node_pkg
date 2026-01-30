@@ -154,11 +154,11 @@ private:
     double qp_vel_max_default_ = 2.0;
     double k_err_ = 20.0;
 
-    // Weights for pose-mom formulation (redundant=false)
-    double w_kin_ = 10.0;
+    // Weights for the two-cost formulation (always used)
+    double w_kin_ = 1.0;
     double w_mom_ = 1.0;
 
-    // Se true, include il termine -A_KO,b^man * Ab^{-1} * h_UAM nel task di momento (solo redundant=true)
+    // Se true, include il termine -A_KO,b^man * Ab^{-1} * h_UAM nel task di momento
     bool use_h_uam_ = false;
 
     // Parametri runtime
