@@ -74,7 +74,7 @@ If no or invalid input is given by the user, the desired relative EE pose comman
 For running the controller 
 
 ```bash
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p kp_pos:=50.0
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err:=50.0
 ```
 
 
@@ -90,7 +90,7 @@ ros2 run clik1_node_pkg clik_uam_node --ros-args -p kp_pos:=50.0
 Parameter      |Default value |   Description    |
 |-------------------|---------------|------------|
 | `use_gazebo_pose` | `true` | The node will try to subscribe to the `/world/default/dynamic_pose/info` topic bridged from Gazebo to ROS2 for getting the UAV pose. 
-| `kp_pos`, `kp_ori` | `20.0` | Are the gain value for the EE feedback. 
+| `k_err` | `20.0` | Proportional gain for EE feedback (position + orientation).
 | `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic.
 | `damping_` | `1e-4` | Damping parameter for damped pseudoinversion
 | `redundant` | `false` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
@@ -209,7 +209,7 @@ where:
 
 - $\dot{\mathbf{\nu}}_{ee,\text{ref}}$ is the feedforward/reference EE twist from the planner.
 - $\mathbf{e}$ is the EE **6D** task-space error (position + orientation).
-- $\mathbf{K}$ is the proportional gain matrix (built from `kp_pos`, `kp_ori`).
+- $\mathbf{K}$ is the proportional gain matrix (built from `k_err`).
 
 - $\mathbf{A}_b$ and $\mathbf{A}_m$ are the base and manipulator blocks of the **UAM Centroidal Momentum Matrix** $\mathbf{A}$, i.e. $\mathbf{A}=[\mathbf{A}_b\ \mathbf{A}_m]$.
 - $`\mathbf{A}_{KO,b}^{\text{man}}`$ and $`\mathbf{A}_{KO,m}^{\text{man}}`$ are the base/manipulator blocks of the **manipulator momentum mapping** that relates generalized velocities to the manipulator angular momentum about the connection point $O$.

@@ -136,44 +136,33 @@ K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t - A
 $$
 
 
-## Control Problem Formulation (redundant case)
+## New control Problem Formulation (redundant case)
 
-The control problem is formulated as:
+The control problem was formulated as:
 
 $\min \;\; \| J_{ext}\,\dot{q}_m - \dot{x}_{ee,des} \|$
 
 embedded into a **QP** with joint limits and velocity bounds.
 
-## Control Problem Formulation (EE position+orientation tracking case)
+## Control Problem Formulation
 
-In this case I would like to track also a reference end-effector orientation trajectory (like it is done in `test2_Jgen_pinocchio`). So I would like to split two cost function. I would like to solve the QP problem:
+I would like to manage the control through two cost functions. I would like to solve the QP problem:
 
-$\min\limits_{\dot{q}_m} \ ( \| J_{gen}\,\dot{q}_m - \dot{x}_{ee,des} \|_{W_1} + \|(A_{KO,b}^{man} A_{b}^{-1} A_{m} + A_{KO,m}^{man})\dot{q}_m  - (K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t) \|_{W_2})$
+$\min\limits_{\dot{q}_m} \ ( \| J_{gen}\,\dot{q}_m - \dot{\nu}_{ee,des} \|_{W_1} + \|(A_{KO,b}^{man} A_{b}^{-1} A_{m} + A_{KO,m}^{man})\dot{q}_m  - (K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t) \|_{W_2})$
 
 subject to the usual velocity and joint constraints. In this case we consider all the rows of the $J_{gen}$ matrix and of the $\dot{x}_{ee,des}$ vector. $\dot{x}_{ee,des}$ is defined as:
 
 $$
-\dot{x}_{ee,des}
+\dot{\nu}_{ee,des}
 =
-\dot{x}_{ee,ref}+Ke
+\dot{\nu}_{ee,ref} + Ke
 $$.
 
-Add a parameter in order for the user to decide wether to use this or the $J_{ext}$ case.
-Define also weights for the two cost functions so that the user can decide wether to give priority to the kinematic tracking or the minimization of the reaction torque. 
+In the case the user chooses `redundant:=true` instead of using the entire $J_{gen}$ use only the linear part of it. 
 
-## Control Problem Formulation (minimization of reaction torque with kinematics as constraint)
+Define also weights for the two cost functions so that the user can decide wether to give priority to the kinematic tracking or the minimization of the reaction torque.
+In the case of `w_mom:=0.0` we get to the kinematic tracking of `QP-Jgen`.  
 
-I would like also to formulate the control problem in another way in the `test_reaction_torque.py` script. I would like to minimize the momentum cost function that has been used in the previous script using the kinematics equation as equality constraint. So the problem is formulated as:
-
-$$\min\limits_{\dot{q}_m} \|(A_{KO,b}^{man} A_{b}^{-1} A_{m} + A_{KO,m}^{man})\dot{q}_m  - (K_{O}^{man}(t_{k})+(v_O \times \mathbf{p}_{man} + \tau_R + \tau_g)\,\Delta t) \|$$
-
-$$\text{s.t.} \qquad [J_{gen}]\dot{q}_m=\dot{x}_{ee,des}$$
-
-and the other inequality constraints related to arm joint limits. 
-
-Define also here two cases:
-- one in which the kinematic constraint is on both posiiton and orientation of the end-effector (full 6D tracking of EE pose).
-- one in which the kinematic constraint is only on EE position.
 
 
 ---

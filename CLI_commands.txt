@@ -71,5 +71,5 @@ ros2 bag record -o clik_test /t960a/pose /joint_states /commands/joint_group /de
 
 --------- LANCIARE NODO DI CONTROLLO (esempio) ------------------------------------
 
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p kp_pos:=50.0 -p  control_rate_hz:=120.0 
--p redundant:=false -p use_h_uam:=false -p kp_ori:=50.0 -p w_kin:=10.0 -p w_mom:=1.0 -p use_gz_odom:=false
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err:=50.0 -p  control_rate_hz:=120.0 \
+-p redundant:=false -p use_h_uam:=false -p w_kin:=10.0 -p w_mom:=1.0 -p use_gz_odom:=false
