@@ -219,9 +219,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     desired_ee_velocity_vec_.setZero();
     // Nota: arm_joints_ è già impostato sopra (prima del modello manipolatore).
 
-    declare_parameter("k_err_x_", 20.0); // legacy (tenuto per compatibilità)
-    declare_parameter("kp_pos", 20.0);
-    declare_parameter("kp_ori", 20.0);
+    declare_parameter("k_err", 20.0);
     declare_parameter("damping", 1e-4);   // damping per pseudoinversa (Tikhonov)
     declare_parameter("qp_lambda_reg", 1e-4);
     declare_parameter("qp_vel_max_default", 2.0);
@@ -247,8 +245,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     use_h_uam_ = this->get_parameter("use_h_uam").as_bool();
     // Parametro per abilitare la null-space velocity qd_N = qd(k-1)
     this->declare_parameter<bool>("qd_N_prev", false);
-    kp_pos_ = get_parameter("kp_pos").as_double();
-    kp_ori_ = get_parameter("kp_ori").as_double();
+    k_err_ = get_parameter("k_err").as_double();
     qp_lambda_reg_ = get_parameter("qp_lambda_reg").as_double();
     qp_vel_max_default_ = get_parameter("qp_vel_max_default").as_double();
     double shoulder_w = get_parameter("shoulder_weight").as_double();
@@ -911,10 +908,10 @@ void ClikUamNode::update()
     // redundant_=true  (jext): minimize || [Jm_lin; J_mom] qdot - [v_lin; v_mom] ||
     // redundant_=false (pose-mom): minimize w_kin*||Jm qdot - v_ee_6d||^2 + w_mom*||J_mom qdot - v_mom||^2
 
-    // v_ee_des = v_ref + Kp*e  (Kp separati pos/orient)
+    // v_ee_des = v_ref + k_err*e  (k_err unico per pos/orient)
     Eigen::Matrix<double, 6, 1> v_ee_task_6d;
-    v_ee_task_6d.segment<3>(0) = desired_ee_velocity_vec_.segment<3>(0) + kp_pos_ * e_pos;
-    v_ee_task_6d.segment<3>(3) = desired_ee_velocity_vec_.segment<3>(3) + kp_ori_ * e_ang;
+    v_ee_task_6d.segment<3>(0) = desired_ee_velocity_vec_.segment<3>(0) + k_err_ * e_pos;
+    v_ee_task_6d.segment<3>(3) = desired_ee_velocity_vec_.segment<3>(3) + k_err_ * e_ang;
 
     qp_P_dense_.setZero();
     qp_gradient_.setZero();

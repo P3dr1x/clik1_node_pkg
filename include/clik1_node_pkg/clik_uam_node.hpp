@@ -152,8 +152,7 @@ private:
     // QP parameters
     double qp_lambda_reg_ = 1e-4;
     double qp_vel_max_default_ = 2.0;
-    double kp_pos_ = 20.0;
-    double kp_ori_ = 20.0;
+    double k_err_ = 20.0;
 
     // Weights for pose-mom formulation (redundant=false)
     double w_kin_ = 10.0;

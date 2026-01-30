@@ -299,8 +299,7 @@ def main():
     VEL_MAX_DEFAULT = 2.0
 
     # Guadagni feedback per il vincolo cinematico (stile clik_uam_node.cpp)
-    kp_pos = 10.0
-    kp_ori = 10.0
+    k_err = 10.0
 
     rate_hz = 100.0
     dt = 1.0 / rate_hz
@@ -598,8 +597,8 @@ def main():
         R_err_world = R_we_des @ R_we.T
         e_ang = np.array(pin.log3(R_err_world)).reshape(3)
         v_kin_6d = np.zeros(6)
-        v_kin_6d[0:3] = v_ee_des[0:3] + kp_pos * e_pos
-        v_kin_6d[3:6] = v_ee_des[3:6] + kp_ori * e_ang
+        v_kin_6d[0:3] = v_ee_des[0:3] + k_err * e_pos
+        v_kin_6d[3:6] = v_ee_des[3:6] + k_err * e_ang
 
         if kin_dim == 3:
             J_kin = Jgen[0:3, :]
