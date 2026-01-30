@@ -178,14 +178,14 @@ In this mode the controller tracks the full EE pose (linear + angular) and adds 
 $$
 \dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}
 \left(\left\|\mathbf{J}_{\text{gen}}\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
-+\left\|\mathbf{M}\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
++\left\|\mathbf{J}_{\text{mom}}\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
 $$
 
 where:
 
 $$\dot{\mathbf{\nu}}_{ee,\text{des}}=\dot{\mathbf{\nu}}_{ee,\text{ref}}+\mathbf{K}\mathbf{e}$$
 
-$$\mathbf{M}=\left(\mathbf{A}_{KO,b}^{\text{man}}\mathbf{A}_b^{-1}\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right),\qquad
+$$\mathbf{J}_{\text{mom}}=\left(\mathbf{A}_{KO,b}^{\text{man}} \ \mathbf{A}_b^{-1}\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right),\qquad
 \mathbf{b}=\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t
 $$
 
