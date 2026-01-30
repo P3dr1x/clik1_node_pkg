@@ -177,7 +177,7 @@ In this mode the controller tracks the full EE pose (linear + angular) and adds 
 
 $$
 \dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}
-\left(\left\|\mathbf{J}_m\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
+\left(\left\|\mathbf{J}_{\text{gen}}\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
 +\left\|\mathbf{M}\,\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
 $$
 
@@ -205,7 +205,7 @@ where:
 - $\Delta t$ is the controller timestep.
 
 - $\mathbf{J}_{\text{gen},\text{lin}}$ is the **linear part** of the manipulator Jacobian mapping $\dot{\mathbf{q}}_m$ to EE linear velocity.
-- $\mathbf{J}_m$ is the **full** manipulator Jacobian (linear + angular) mapping $\dot{\mathbf{q}}_m$ to EE twist.
+- $\mathbf{J}_{\text{gen}}$ is the **Generalized** Jacobian matrix mapping $\dot{\mathbf{q}}_m$ to EE twist.
 
 - $\dot{\mathbf{\nu}}_{ee,\text{ref}}$ is the feedforward/reference EE twist from the planner.
 - $\mathbf{e}$ is the EE **6D** task-space error (position + orientation).
