@@ -36,6 +36,8 @@ def generate_launch_description():
     # Micro XRCE Agent args (PX4 → ROS 2 bridge over serial)
     px4_agent_dev = LaunchConfiguration('px4_agent_dev', default='/dev/ttyUSB1')
     px4_agent_baud = LaunchConfiguration('px4_agent_baud', default='921600')
+    microxrce_start_delay = LaunchConfiguration('microxrce_start_delay', default='10.0')
+    vel_pub_start_delay = LaunchConfiguration('vel_pub_start_delay', default='5.0')
 
     # Paths to models
     pkg_share = get_package_share_directory('clik1_node_pkg')  
@@ -84,6 +86,16 @@ def generate_launch_description():
         condition=IfCondition(real_system)
     )
 
+    # Avvia Micro XRCE Agent 10s dopo xs_sdk_node (solo su sistema reale)
+    delayed_microxrce_agent = RegisterEventHandler(
+        OnProcessStart(
+            target_action=xs_sdk_node,
+            on_start=[
+                TimerAction(period=microxrce_start_delay, actions=[microxrce_agent])
+            ]
+        )
+    )
+
     world_to_base_link_broadcaster = Node(
         package='clik1_node_pkg',
         executable='world_to_base_link_broadcaster',
@@ -102,6 +114,25 @@ def generate_launch_description():
         output='screen',
         parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
         condition=IfCondition(real_system)
+    )
+
+    real_drone_vel_pub = Node(
+        package='clik1_node_pkg',
+        executable='real_drone_vel_pub',
+        name='real_drone_vel_pub',
+        output='screen',
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
+        condition=IfCondition(real_system)
+    )
+
+    # Avvia real_drone_vel_pub alcuni secondi dopo MicroXRCEAgent (solo su sistema reale)
+    delayed_real_drone_vel_pub = RegisterEventHandler(
+        OnProcessStart(
+            target_action=microxrce_agent,
+            on_start=[
+                TimerAction(period=vel_pub_start_delay, actions=[real_drone_vel_pub])
+            ]
+        )
     )
 
     # Nodo CLIK
@@ -153,10 +184,13 @@ def generate_launch_description():
         DeclareLaunchArgument('real_system', default_value='true', choices=['true','false'], description='Se true avvia il nodo real_drone_pose_pub e il broadcaster usa la posa reale.'),
         DeclareLaunchArgument('px4_agent_dev', default_value='/dev/ttyUSB1', description='Dispositivo seriale PX4 (es. /dev/ttyACM0, /dev/ttyUSB1).'),
         DeclareLaunchArgument('px4_agent_baud', default_value='921600', description='Baudrate per MicroXRCEAgent.'),
+        DeclareLaunchArgument('microxrce_start_delay', default_value='10.0', description='Ritardo (s) prima di avviare MicroXRCEAgent dopo xs_sdk_node.'),
+        DeclareLaunchArgument('vel_pub_start_delay', default_value='10.0', description='Ritardo (s) prima di avviare real_drone_vel_pub dopo MicroXRCEAgent.'),
         # Be sure that MicroXRCEAgent is exposing PX4 topic on ROS2
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false'], description='Lancia RViz se true.'),
-    #microxrce_agent,
-    #real_drone_pose_pub,
+    delayed_microxrce_agent,
+    delayed_real_drone_vel_pub,
+    # real_drone_pose_pub,
     world_to_base_link_broadcaster,
     xs_sdk_node,
     robot_state_publisher,
