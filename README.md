@@ -149,7 +149,7 @@ At each control timestep, a QP is solved with joint velocity bounds and (discret
 
 In this mode the controller stacks the kinematic tracking (EE linear velocity) and the momentum task into a single least-squares objective:
 
-$$\dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}\ \left\|\mathbf{J}_{\text{ext}}\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{\text{e,des}}\right\|$$
+$$\dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}\ \left\|\mathbf{J}_{\text{ext}}\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{\text{e,des}}\right\|$$
 
 with:
 
@@ -157,7 +157,7 @@ $$
 \mathbf{J}_{\text{ext}}=
 \begin{bmatrix}
 \mathbf{J}_{\text{gen},\text{lin}}\\
-\left(\mathbf{A}_{KO,b}^{\text{man}}\,\mathbf{A}_b^{-1}\,\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right)
+\left(\mathbf{A}_{KO,b}^{\text{man}}\mathbf{A}_b^{-1}\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right)
 \end{bmatrix}
 $$
 
@@ -166,7 +166,7 @@ and a stacked desired task vector:
 $$
 \dot{\mathbf{\nu}}_{\text{des}}=
 \begin{bmatrix}
-\dot{\mathbf{\nu}}_{e,\text{ref}}+\mathbf{K}\,\mathbf{e}_{\text{lin}}\\
+\dot{\mathbf{\nu}}_{e,\text{ref}}+\mathbf{K}\mathbf{e}_{\text{lin}}\\
 \mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t)
 \end{bmatrix}
 $$
@@ -177,15 +177,15 @@ In this mode the controller tracks the full EE pose (linear + angular) and adds 
 
 $$
 \dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}
-\left(\left\|\mathbf{J}_{\text{gen}}\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
-+\left\|\mathbf{M}\,\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
+\left(\left\|\mathbf{J}_{\text{gen}}\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
++\left\|\mathbf{M}\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
 $$
 
 where:
 
-$$\dot{\mathbf{\nu}}_{ee,\text{des}}=\dot{\mathbf{\nu}}_{ee,\text{ref}}+\mathbf{K}\,\mathbf{e}$$
+$$\dot{\mathbf{\nu}}_{ee,\text{des}}=\dot{\mathbf{\nu}}_{ee,\text{ref}}+\mathbf{K}\mathbf{e}$$
 
-$$\mathbf{M}=\left(\mathbf{A}_{KO,b}^{\text{man}}\,\mathbf{A}_b^{-1}\,\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right),\qquad
+$$\mathbf{M}=\left(\mathbf{A}_{KO,b}^{\text{man}}\mathbf{A}_b^{-1}\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right),\qquad
 \mathbf{b}=\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t
 $$
 
