@@ -19,6 +19,7 @@ set(CONTROLLER_INCLUDE_DEPENDS
   trajectory_msgs
   tf2_ros
   tf2_geometry_msgs
+  geometry_msgs
   Eigen3
   pluginlib
   rcpputils
@@ -145,5 +146,15 @@ ament_target_dependencies(real_drone_pose_pub
 )
 target_link_libraries(real_drone_pose_pub Eigen3::Eigen)
 install(TARGETS real_drone_pose_pub DESTINATION lib/${PROJECT_NAME})
+
+# Nodo real_drone_vel_pub
+add_executable(real_drone_vel_pub src/real_drone_vel_pub.cpp)
+ament_target_dependencies(real_drone_vel_pub
+  rclcpp
+  geometry_msgs
+  px4_msgs
+)
+target_link_libraries(real_drone_vel_pub Eigen3::Eigen)
+install(TARGETS real_drone_vel_pub DESTINATION lib/${PROJECT_NAME})
 
 ament_package()
