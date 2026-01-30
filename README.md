@@ -149,7 +149,7 @@ At each control timestep, a QP is solved with joint velocity bounds and (discret
 
 In this mode the controller stacks the kinematic tracking (EE linear velocity) and the momentum task into a single least-squares objective:
 
-$$\dot{\mathbf{q}}_m = \operatorname*{argmin}_{\dot{\mathbf{q}}_m}\ \left\|\mathbf{J}_{\text{ext}}\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{\text{e,des}}\right\|$$
+$$\dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}\ \left\|\mathbf{J}_{\text{ext}}\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{\text{e,des}}\right\|$$
 
 with:
 
@@ -176,8 +176,8 @@ $$
 In this mode the controller tracks the full EE pose (linear + angular) and adds the momentum task as a second weighted least-squares term:
 
 $$
-\dot{\mathbf{q}}_m = \operatorname*{argmin}_{\dot{\mathbf{q}}_m}
-\left(\left\|\mathbf{J}_{\text{gen}}\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
+\dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}
+\left(\left\|\mathbf{J}_m\,\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
 +\left\|\mathbf{M}\,\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
 $$
 
@@ -212,7 +212,7 @@ where:
 - $\mathbf{K}$ is the proportional gain matrix (built from `kp_pos`, `kp_ori`).
 
 - $\mathbf{A}_b$ and $\mathbf{A}_m$ are the base and manipulator blocks of the **UAM Centroidal Momentum Matrix** $\mathbf{A}$, i.e. $\mathbf{A}=[\mathbf{A}_b\ \mathbf{A}_m]$.
-- $\mathbf{A}_{KO,b}^{\text{man}}$ and $\mathbf{A}_{KO,m}^{\text{man}}$ are the base/manipulator blocks of the **manipulator momentum mapping** that relates generalized velocities to the manipulator angular momentum about the connection point $O$.
+- $`\mathbf{A}_{KO,b}^{\text{man}}$ and $\mathbf{A}_{KO,m}^{\text{man}}`$ are the base/manipulator blocks of the **manipulator momentum mapping** that relates generalized velocities to the manipulator angular momentum about the connection point $O$.
 
 - $\mathbf{K}_O^{\text{man}}(t_k)$ is the **manipulator angular momentum** about the drone–manipulator connection point $O$ at time $t_k$.
 - $\mathbf{p}_{\text{man}}$ is the **manipulator linear momentum**.
