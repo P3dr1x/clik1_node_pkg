@@ -93,7 +93,10 @@ Parameter      |Default value |   Description    |
 | `kp_pos`, `kp_ori` | `20.0` | Are the gain value for the EE feedback. 
 | `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic.
 | `damping_` | `1e-4` | Damping parameter for damped pseudoinversion
-| `redundant` | `false` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
+| `redundant` | `true` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
+| `w_kin` | `1.0` | Weight of the kinematic tracking task.
+| `w_mom` | `1.0` | Weight of the momentum-based task.
+| `w_com` | `0.0` | Weight of the manipulator CoM velocity minimization task.
 | `control_rate_hz` | `100.0` | Frequency at which the `update()` loop of the controller node will operate.
 | `<joint_name>_weight` | `15.0`, `25.0` | Set the weight of the specific joint. This influences the weight matrix used in the weighted pseudoinversion. You can choose `shoulder`, `forearm_roll`, `wrist_rotate` joints.
 
@@ -145,40 +148,17 @@ The controller computes in real-time the **manipulator joint velocity command** 
 
 At each control timestep, a QP is solved with joint velocity bounds and (discretized) joint position bounds.
 
-### Formulation A (Extended Jacobian, `redundant:=true`)
+### Formulation (weighted least-squares QP)
 
-In this mode the controller stacks the kinematic tracking (EE linear velocity) and the momentum task into a single least-squares objective:
-
-$$\dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}\ \left\|\mathbf{J}_{\text{ext}}\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{\text{e,des}}\right\|$$
-
-with:
-
-$$
-\mathbf{J}_{\text{ext}}=
-\begin{bmatrix}
-\mathbf{J}_{m,\text{lin}}\\
-\left(\mathbf{A}_{KO,b}^{\text{man}}\mathbf{A}_b^{-1}\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right)
-\end{bmatrix}
-$$
-
-and a stacked desired task vector:
-
-$$
-\dot{\mathbf{\nu}}_{\text{des}}=
-\begin{bmatrix}
-\dot{\mathbf{\nu}}_{e,\text{ref}}+\mathbf{K}\mathbf{e}_{\text{lin}}\\
-\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t)
-\end{bmatrix}
-$$
-
-### Formulation B (`redundant:=false`)
-
-In this mode the controller tracks the full EE pose (linear + angular) and adds the momentum task as a second weighted least-squares term:
+The controller can track the full EE pose (in `redundante:=false` case) or it can track only EE position (`redundant:=true` case). Optionally it adds a reaction torque and/or manipulator CoM linear velocity minimization tasks through additional least-squares terms:
 
 $$
 \dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}
-\left(\left\|\mathbf{J}_m \dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
-+\left\|\mathbf{M}\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
+\Big(
+\,w_{\text{kin}}\left\|\mathbf{J}_m \dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|^2
++w_{\text{mom}}\left\|\mathbf{M}\dot{\mathbf{q}}_m-\mathbf{b}\right\|^2
++w_{\text{com}}\left\|\mathbf{J}_{{G_m},m}\dot{\mathbf{q}}_m\right\|^2
+\Big)
 $$
 
 where:
@@ -189,7 +169,7 @@ $$\mathbf{M}=\left(\mathbf{A}_{KO,b}^{\text{man}}\mathbf{A}_b^{-1}\mathbf{A}_m+\
 \mathbf{b}=\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t
 $$
 
-### Constraints (both modes)
+### Constraints
 
 $$
 {s.t. }\quad
@@ -220,7 +200,7 @@ where:
 - $\boldsymbol{\tau}_g$ is the gravity torque acting on the manipulator.
 - The reaction torque term $\boldsymbol{\tau}_R$ is set to zero (the goal is to minimize reaction torque).
 
-- $\mathbf{W}_1$ and $\mathbf{W}_2$ are the weight matrices that trade off between kinematic tracking and momentum task (implemented via scalar parameters `w_kin` and `w_mom`).
+- $w_{\text{kin}}$, $w_{\text{mom}}$, $w_{\text{com}}$ are scalar weights that trade off between kinematic tracking, momentum task, and CoM-velocity minimization.
 
 For more info check the papers (please consider citing):
 

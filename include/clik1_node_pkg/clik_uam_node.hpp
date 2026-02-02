@@ -157,6 +157,7 @@ private:
     // Weights for the two-cost formulation (always used)
     double w_kin_ = 1.0;
     double w_mom_ = 1.0;
+    double w_com_ = 0.0;
 
     // Se true, include il termine -A_KO,b^man * Ab^{-1} * h_UAM nel task di momento
     bool use_h_uam_ = false;
