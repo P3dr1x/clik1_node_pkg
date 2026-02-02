@@ -172,8 +172,8 @@ $$
 
 and the kinematic task is selected by `redundant`:
 
-- If `redundant:=true`, the controller tracks only the EE position (linear part) with $\mathbf{J}_{\text{gen},\text{lin}}$ and $\dot{\boldsymbol{\nu}}_{ee,\text{des}}$ is the corresponding 3D linear velocity target.
-- If `redundant:=false`, the controller tracks the full EE pose (6D twist) with $\mathbf{J}_{\text{gen}}$ and $\dot{\boldsymbol{\nu}}_{ee,\text{des}}$ is the 6D twist target.
+- If `redundant:=true`, the controller tracks only the EE position (linear part) with $`\mathbf{J}_{\text{gen},\text{lin}}`$ and $`\dot{\boldsymbol{\nu}}_{ee,\text{des}}`$ is the corresponding 3D linear velocity target.
+- If `redundant:=false`, the controller tracks the full EE pose (6D twist) with $`\mathbf{J}_{\text{gen}}`$ and $`\dot{\boldsymbol{\nu}}_{ee,\text{des}}`$ is the 6D twist target.
 
 ### Constraints (both modes)
 
@@ -198,7 +198,7 @@ where:
 - $\mathbf{K}$ is the proportional gain matrix (built from `k_err`).
 
 - $\mathbf{A}_b$ and $\mathbf{A}_m$ are the base and manipulator blocks of the **UAM Centroidal Momentum Matrix** $\mathbf{A}$, i.e. $\mathbf{A}=[\mathbf{A}_b\ \mathbf{A}_m]$.
-- $\mathbf{A}_{KO,b}^{\text{man}}$ and $\mathbf{A}_{KO,m}^{\text{man}}$ are the base/manipulator blocks of the **manipulator momentum mapping** that relates generalized velocities to the manipulator angular momentum about the connection point $O$.
+- $`\mathbf{A}_{KO,b}^{\text{man}}`$ and $`\mathbf{A}_{KO,m}^{\text{man}}`$ are the base/manipulator blocks of the **manipulator momentum mapping** that relates generalized velocities to the manipulator angular momentum about the connection point $O$.
 
 - $\mathbf{K}_O^{\text{man}}(t_k)$ is the **manipulator angular momentum** about the drone–manipulator connection point $O$ at time $t_k$.
 - $\mathbf{p}_{\text{man}}$ is the **manipulator linear momentum**.
