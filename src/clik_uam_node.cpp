@@ -242,8 +242,10 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // Nota: ponendo w_mom=0.0 si ottiene il caso puramente cinematico (QP-Jgen).
     this->declare_parameter<double>("w_kin", 10.0);
     this->declare_parameter<double>("w_mom", 1.0);
+    this->declare_parameter<double>("w_com", 0.0);
     w_kin_ = this->get_parameter("w_kin").as_double();
     w_mom_ = this->get_parameter("w_mom").as_double();
+    w_com_ = this->get_parameter("w_com").as_double();
 
     // Abilita/disabilita il termine basato sul momento totale h_UAM nel task di momento (solo redundant=true)
     this->declare_parameter<bool>("use_h_uam", false);
@@ -739,6 +741,12 @@ void ClikUamNode::update()
     Eigen::Vector3d v_mom_task = Eigen::Vector3d::Zero();
     Eigen::Vector3d h_uam_term = Eigen::Vector3d::Zero();
 
+    // ==== Task opzionale: minimizzazione velocità CoM manipolatore ====
+    // v_com = J_com_arm * qdot_arm + J_com_b * v_base
+    Eigen::MatrixXd J_com_arm(3, n_arm);
+    J_com_arm.setZero();
+    Eigen::Vector3d v_com_task = Eigen::Vector3d::Zero();
+
     {
         // Costruisci stato (q_man, v_man) del manipolatore imponendo la posa di O dal modello completo
         Eigen::VectorXd q_man(model_man_.nq);
@@ -784,6 +792,20 @@ void ClikUamNode::update()
         pinocchio::centerOfMass(model_man_, data_man_, q_man, v_man, false);
         pinocchio::computeCentroidalMap(model_man_, data_man_, q_man);
         pinocchio::computeCentroidalMomentum(model_man_, data_man_, q_man, v_man);
+
+        // Jacobiano del centro di massa del manipolatore (lineare, in WORLD)
+        // Nota: Pinocchio ritorna una matrice 3 x nv (nv include FreeFlyer + giunti)
+        const Eigen::MatrixXd Jcom_all = pinocchio::jacobianCenterOfMass(model_man_, data_man_, q_man, false);
+        const Eigen::MatrixXd Jcom_b = Jcom_all.leftCols(6); // 3x6
+        for (int i = 0; i < n_arm; ++i) {
+            const int iv_man = idx_v_arm_man_[i];
+            if (iv_man >= 0 && iv_man < Jcom_all.cols()) {
+                J_com_arm.col(i) = Jcom_all.col(iv_man);
+            } else {
+                J_com_arm.col(i).setZero();
+            }
+        }
+        v_com_task.setZero(); // = -(Jcom_b * v_man.head(6));
 
         const Eigen::MatrixXd &Ag_man = data_man_.Ag; // 6 x (6+n_arm_man)
         const Eigen::MatrixXd A_p_man = Ag_man.topRows(3);
@@ -896,8 +918,10 @@ void ClikUamNode::update()
 
     // 7. QP-based control (OSQP-Eigen)
     // Decision variable: x = qdot_arm (size n_arm)
-    // Cost (due funzioni):
-    //   min_x  w_kin * || J_kin x - b_kin ||^2 + w_mom * || J_mom x - b_mom ||^2
+    // Cost (somma di funzioni):
+    //   min_x  w_kin * || J_kin x - b_kin ||^2
+    //        + w_mom * || J_mom x - b_mom ||^2
+    //        + w_com * || J_com x - b_com ||^2
     // dove:
     //   - se redundant=true:  J_kin = Jgen_lin (3 x n), b_kin = v_ee_lin_des
     //   - se redundant=false: J_kin = Jgen     (6 x n), b_kin = v_ee_6d_des
@@ -924,6 +948,7 @@ void ClikUamNode::update()
     // Due contributi separati e pesati (sempre)
     const double w_kin = std::max(0.0, w_kin_);
     const double w_mom = std::max(0.0, w_mom_);
+    const double w_com = std::max(0.0, w_com_);
 
     if (redundant_) {
         // Tracking SOLO lineare (3D)
@@ -932,11 +957,18 @@ void ClikUamNode::update()
         const Eigen::MatrixXd &J2 = J_mom_arm;               // 3 x n
         const Eigen::Vector3d b2 = v_mom_task;               // 3
 
-        qp_P_dense_.noalias() = (w_kin * (J1.transpose() * J1)) + (w_mom * (J2.transpose() * J2));
+        const Eigen::MatrixXd &J3 = J_com_arm;               // 3 x n
+        const Eigen::Vector3d &b3 = v_com_task;              // 3
+
+        qp_P_dense_.noalias() = (w_kin * (J1.transpose() * J1)) +
+                                (w_mom * (J2.transpose() * J2)) +
+                                (w_com * (J3.transpose() * J3));
         qp_P_dense_.diagonal().array() += qp_lambda_reg_;
         qp_P_dense_ = 0.5 * (qp_P_dense_ + qp_P_dense_.transpose());
 
-        qp_gradient_.noalias() = -((w_kin * (J1.transpose() * b1)) + (w_mom * (J2.transpose() * b2)));
+        qp_gradient_.noalias() = -((w_kin * (J1.transpose() * b1)) +
+                                  (w_mom * (J2.transpose() * b2)) +
+                                  (w_com * (J3.transpose() * b3)));
     } else {
         // Tracking posa 6D (lineare + angolare)
         const Eigen::MatrixXd &J1 = Jgen_arm;                // 6 x n
@@ -944,11 +976,18 @@ void ClikUamNode::update()
         const Eigen::MatrixXd &J2 = J_mom_arm;               // 3 x n
         const Eigen::Vector3d b2 = v_mom_task;               // 3
 
-        qp_P_dense_.noalias() = (w_kin * (J1.transpose() * J1)) + (w_mom * (J2.transpose() * J2));
+        const Eigen::MatrixXd &J3 = J_com_arm;               // 3 x n
+        const Eigen::Vector3d &b3 = v_com_task;              // 3
+
+        qp_P_dense_.noalias() = (w_kin * (J1.transpose() * J1)) +
+                                (w_mom * (J2.transpose() * J2)) +
+                                (w_com * (J3.transpose() * J3));
         qp_P_dense_.diagonal().array() += qp_lambda_reg_;
         qp_P_dense_ = 0.5 * (qp_P_dense_ + qp_P_dense_.transpose());
 
-        qp_gradient_.noalias() = -((w_kin * (J1.transpose() * b1)) + (w_mom * (J2.transpose() * b2)));
+        qp_gradient_.noalias() = -((w_kin * (J1.transpose() * b1)) +
+                                  (w_mom * (J2.transpose() * b2)) +
+                                  (w_com * (J3.transpose() * b3)));
     }
 
     // Bounds l/u

@@ -93,7 +93,10 @@ Parameter      |Default value |   Description    |
 | `k_err` | `20.0` | Proportional gain for EE feedback (position + orientation).
 | `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic.
 | `damping_` | `1e-4` | Damping parameter for damped pseudoinversion
-| `redundant` | `false` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
+| `redundant` | `true` | If `true`, track only the EE position (3D linear task). If `false`, track full EE pose (6D linear + angular task).
+| `w_kin` | `10.0` | Weight of the kinematic tracking task.
+| `w_mom` | `1.0` | Weight of the momentum-based task.
+| `w_com` | `0.0` | Weight of the manipulator CoM velocity minimization task.
 | `control_rate_hz` | `100.0` | Frequency at which the `update()` loop of the controller node will operate.
 | `<joint_name>_weight` | `15.0`, `25.0` | Set the weight of the specific joint. This influences the weight matrix used in the weighted pseudoinversion. You can choose `shoulder`, `forearm_roll`, `wrist_rotate` joints.
 
@@ -145,49 +148,32 @@ The controller computes in real-time the **manipulator joint velocity command** 
 
 At each control timestep, a QP is solved with joint velocity bounds and (discretized) joint position bounds.
 
-### Formulation A (Extended Jacobian, `redundant:=true`)
+### Objective
 
-In this mode the controller stacks the kinematic tracking (EE linear velocity) and the momentum task into a single least-squares objective:
-
-$$\dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}\ \left\|\mathbf{J}_{\text{ext}}\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{\text{e,des}}\right\|$$
-
-with:
-
-$$
-\mathbf{J}_{\text{ext}}=
-\begin{bmatrix}
-\mathbf{J}_{\text{gen},\text{lin}}\\
-\left(\mathbf{A}_{KO,b}^{\text{man}}\mathbf{A}_b^{-1}\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right)
-\end{bmatrix}
-$$
-
-and a stacked desired task vector:
-
-$$
-\dot{\mathbf{\nu}}_{\text{des}}=
-\begin{bmatrix}
-\dot{\mathbf{\nu}}_{e,\text{ref}}+\mathbf{K}\mathbf{e}_{\text{lin}}\\
-\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t)
-\end{bmatrix}
-$$
-
-### Formulation B (`redundant:=false`)
-
-In this mode the controller tracks the full EE pose (linear + angular) and adds the momentum task as a second weighted least-squares term:
+The controller solves a weighted least-squares QP where the decision variable is the **manipulator joint velocity** $\dot{\mathbf{q}}_m$.
 
 $$
 \dot{\mathbf{q}}_m = \mathop{\mathrm{argmin}}\limits_{\dot{\mathbf{q}}_m}
-\left(\left\|\mathbf{J}_{\text{gen}}\dot{\mathbf{q}}_m-\dot{\mathbf{\nu}}_{ee,\text{des}}\right\|_{\mathbf{W}_1}
-+\left\|\mathbf{J}_{\text{mom}}\dot{\mathbf{q}}_m-\mathbf{b}\right\|_{\mathbf{W}_2}\right)
+\Big(
+w_{\text{kin}}\,\|\mathbf{J}_{\text{gen}}\dot{\mathbf{q}}_m-\dot{\boldsymbol{\nu}}_{ee,\text{des}}\|^2
++w_{\text{mom}}\,\|\mathbf{J}_{\text{mom}}\dot{\mathbf{q}}_m-\mathbf{b}_{\text{mom}}\|^2
++w_{\text{com}}\,\|\mathbf{J}_{G_{m}} \dot{\mathbf{q}}_m\|^2
+\Big)
 $$
 
 where:
 
-$$\dot{\mathbf{\nu}}_{ee,\text{des}}=\dot{\mathbf{\nu}}_{ee,\text{ref}}+\mathbf{K}\mathbf{e}$$
+$$\dot{\boldsymbol{\nu}}_{ee,\text{des}}=\dot{\boldsymbol{\nu}}_{ee,\text{ref}}+\mathbf{K}\,\mathbf{e}$$
 
-$$\mathbf{J}_{\text{mom}}=\left(\mathbf{A}_{KO,b}^{\text{man}} \ \mathbf{A}_b^{-1}\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right),\qquad
-\mathbf{b}=\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t
 $$
+\mathbf{J}_{\text{mom}}=\left(\mathbf{A}_{KO,b}^{\text{man}}\,\mathbf{A}_b^{-1}\mathbf{A}_m+\mathbf{A}_{KO,m}^{\text{man}}\right),\qquad
+\mathbf{b}_{\text{mom}}=\mathbf{K}_O^{\text{man}}(t_k)+\left(\mathbf{v}_O\times\mathbf{p}_{\text{man}}+\boldsymbol{\tau}_g\right)\Delta t
+$$
+
+and the kinematic task is selected by `redundant`:
+
+- If `redundant:=true`, the controller tracks only the EE position (linear part) with $\mathbf{J}_{\text{gen},\text{lin}}$ and $\dot{\boldsymbol{\nu}}_{ee,\text{des}}$ is the corresponding 3D linear velocity target.
+- If `redundant:=false`, the controller tracks the full EE pose (6D twist) with $\mathbf{J}_{\text{gen}}$ and $\dot{\boldsymbol{\nu}}_{ee,\text{des}}$ is the 6D twist target.
 
 ### Constraints (both modes)
 
@@ -204,15 +190,15 @@ where:
 - $\dot{\mathbf{q}}_m$ is the vector of **manipulator joint velocities** (the only decision variables of the QP).
 - $\Delta t$ is the controller timestep.
 
-- $\mathbf{J}_{\text{gen},\text{lin}}$ is the **linear part** of the manipulator Jacobian mapping $\dot{\mathbf{q}}_m$ to EE linear velocity.
-- $\mathbf{J}_{\text{gen}}$ is the **Generalized** Jacobian matrix mapping $\dot{\mathbf{q}}_m$ to EE twist.
+- $\mathbf{J}_{\text{gen},\text{lin}}$ is the **linear part** of the generalized Jacobian mapping $\dot{\mathbf{q}}_m$ to EE linear velocity.
+- $\mathbf{J}_{\text{gen}}$ is the **generalized** Jacobian mapping $\dot{\mathbf{q}}_m$ to EE twist.
 
 - $\dot{\mathbf{\nu}}_{ee,\text{ref}}$ is the feedforward/reference EE twist from the planner.
 - $\mathbf{e}$ is the EE **6D** task-space error (position + orientation).
 - $\mathbf{K}$ is the proportional gain matrix (built from `k_err`).
 
 - $\mathbf{A}_b$ and $\mathbf{A}_m$ are the base and manipulator blocks of the **UAM Centroidal Momentum Matrix** $\mathbf{A}$, i.e. $\mathbf{A}=[\mathbf{A}_b\ \mathbf{A}_m]$.
-- $`\mathbf{A}_{KO,b}^{\text{man}}`$ and $`\mathbf{A}_{KO,m}^{\text{man}}`$ are the base/manipulator blocks of the **manipulator momentum mapping** that relates generalized velocities to the manipulator angular momentum about the connection point $O$.
+- $\mathbf{A}_{KO,b}^{\text{man}}$ and $\mathbf{A}_{KO,m}^{\text{man}}$ are the base/manipulator blocks of the **manipulator momentum mapping** that relates generalized velocities to the manipulator angular momentum about the connection point $O$.
 
 - $\mathbf{K}_O^{\text{man}}(t_k)$ is the **manipulator angular momentum** about the drone–manipulator connection point $O$ at time $t_k$.
 - $\mathbf{p}_{\text{man}}$ is the **manipulator linear momentum**.
