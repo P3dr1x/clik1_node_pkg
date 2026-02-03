@@ -104,7 +104,7 @@ void PlannerNode::run() {
     while (rclcpp::ok()) {
       std::cout << "What do you want the end-effector to do?" << std::endl;
       std::cout << "1. Positioning" << std::endl;
-      std::cout << "2. Circular trajectory (x-z plane)" << std::endl;
+      std::cout << "2. Circular trajectory" << std::endl;
       std::cout << "3. Polyline trajectory" << std::endl;
       std::cout << "4. Back-and-forth" << std::endl;
       std::cout << "> ";
@@ -174,6 +174,15 @@ void PlannerNode::run_back_and_forth_trajectory()
   constexpr int kNumPairs = 10;
   const int num_pubs = 2 * kNumPairs;
 
+  // Endpoint locali nel frame mobile_wx250s/base_link
+  const Eigen::Vector3d mid_local = (plane == 2) ? Eigen::Vector3d(0.5, 0.0, 0.3)
+                                                : Eigen::Vector3d(0.4, 0.0, 0.3);
+  const double half = 0.5 * length_m;
+  const Eigen::Vector3d A_local = (plane == 2) ? Eigen::Vector3d(mid_local.x(), mid_local.y() + half, mid_local.z())
+                                               : Eigen::Vector3d(mid_local.x() + half, mid_local.y(), mid_local.z());
+  const Eigen::Vector3d B_local = (plane == 2) ? Eigen::Vector3d(mid_local.x(), mid_local.y() - half, mid_local.z())
+                                               : Eigen::Vector3d(mid_local.x() - half, mid_local.y(), mid_local.z());
+
   // Attendi pose drone
   rclcpp::Rate wait_rate(10);
   while (rclcpp::ok() && (!has_vehicle_local_position_ || !has_vehicle_attitude_)) {
@@ -199,6 +208,23 @@ void PlannerNode::run_back_and_forth_trajectory()
   q_base.normalize();
   tf2::Quaternion q_tf(q_base.x(), q_base.y(), q_base.z(), q_base.w());
   tf_base_to_arm_base_tf2.setRotation(q_tf);
+
+  // Remark 2: congela la posa di mobile_wx250s/base_link (via posa drone) al momento dell'input.
+  // Gli endpoint in world devono restare costanti durante l'esecuzione.
+  geometry_msgs::msg::Pose drone_pose;
+  drone_pose.position.x = vehicle_local_position_.x;
+  drone_pose.position.y = vehicle_local_position_.y;
+  drone_pose.position.z = vehicle_local_position_.z;
+  drone_pose.orientation.x = vehicle_attitude_.q[1];
+  drone_pose.orientation.y = vehicle_attitude_.q[2];
+  drone_pose.orientation.z = vehicle_attitude_.q[3];
+  drone_pose.orientation.w = vehicle_attitude_.q[0];
+  tf2::Transform tf_drone_pose;
+  tf2::fromMsg(drone_pose, tf_drone_pose);
+  const tf2::Transform tf_world_from_arm_base0 = tf_drone_pose * tf_base_to_arm_base_tf2;
+
+  const tf2::Vector3 pA_world_tf = tf_world_from_arm_base0 * tf2::Vector3(A_local.x(), A_local.y(), A_local.z());
+  const tf2::Vector3 pB_world_tf = tf_world_from_arm_base0 * tf2::Vector3(B_local.x(), B_local.y(), B_local.z());
 
   // Orientazione EE da mantenere costante: usa /ee_world_pose se disponibile, altrimenti FK
   // Remark: l'orientazione agli endpoint deve essere quella all'inizio della traiettoria,
@@ -259,42 +285,20 @@ void PlannerNode::run_back_and_forth_trajectory()
     q_world_ee = q_fk;
   }
 
-  // Endpoint locali nel frame mobile_wx250s/base_link
-  const Eigen::Vector3d mid_local = (plane == 2) ? Eigen::Vector3d(0.5, 0.0, 0.3)
-                                                : Eigen::Vector3d(0.4, 0.0, 0.3);
-  const double half = 0.5 * length_m;
-  const Eigen::Vector3d A_local = (plane == 2) ? Eigen::Vector3d(mid_local.x(), mid_local.y() + half, mid_local.z())
-                                               : Eigen::Vector3d(mid_local.x() + half, mid_local.y(), mid_local.z());
-  const Eigen::Vector3d B_local = (plane == 2) ? Eigen::Vector3d(mid_local.x(), mid_local.y() - half, mid_local.z())
-                                               : Eigen::Vector3d(mid_local.x() - half, mid_local.y(), mid_local.z());
-
   RCLCPP_INFO(this->get_logger(),
               "Back-and-forth: plane=%s, length=%.1f cm, dt=%.2f s, pairs=%d (pub=%d)",
               (plane == 2 ? "frontale(y-z)" : "sagittale(x-z)"), length_cm, dt_s, kNumPairs, num_pubs);
   RCLCPP_INFO(this->get_logger(),
               "Local endpoints (base_link): A=[%.3f %.3f %.3f], B=[%.3f %.3f %.3f]",
               A_local.x(), A_local.y(), A_local.z(), B_local.x(), B_local.y(), B_local.z());
+  RCLCPP_INFO(this->get_logger(),
+              "Frozen world endpoints: A=[%.3f %.3f %.3f], B=[%.3f %.3f %.3f]",
+              pA_world_tf.x(), pA_world_tf.y(), pA_world_tf.z(), pB_world_tf.x(), pB_world_tf.y(), pB_world_tf.z());
 
   for (int i = 0; i < num_pubs && rclcpp::ok(); ++i) {
-    // aggiorna eventuali callback (posa drone)
+    // mantenere attiva l'esecuzione ROS senza aggiornare gli endpoint congelati
     rclcpp::spin_some(this->get_node_base_interface());
-
-    geometry_msgs::msg::Pose drone_pose;
-    drone_pose.position.x = vehicle_local_position_.x;
-    drone_pose.position.y = vehicle_local_position_.y;
-    drone_pose.position.z = vehicle_local_position_.z;
-    drone_pose.orientation.x = vehicle_attitude_.q[1];
-    drone_pose.orientation.y = vehicle_attitude_.q[2];
-    drone_pose.orientation.z = vehicle_attitude_.q[3];
-    drone_pose.orientation.w = vehicle_attitude_.q[0];
-    tf2::Transform tf_drone_pose;
-    tf2::fromMsg(drone_pose, tf_drone_pose);
-
-    const Eigen::Vector3d &p_local = ((i % 2) == 0) ? A_local : B_local;
-    const tf2::Vector3 p_local_tf(p_local.x(), p_local.y(), p_local.z());
-
-    const tf2::Transform tf_world_from_arm_base = tf_drone_pose * tf_base_to_arm_base_tf2;
-    const tf2::Vector3 p_world_tf = tf_world_from_arm_base * p_local_tf;
+    const tf2::Vector3 &p_world_tf = ((i % 2) == 0) ? pA_world_tf : pB_world_tf;
 
     geometry_msgs::msg::Pose out;
     out.position.x = p_world_tf.x();
@@ -487,6 +491,26 @@ void PlannerNode::publish_desired_global_pose(const geometry_msgs::msg::Pose& po
 }
 
 void PlannerNode::run_circular_trajectory() {
+  // Scelta piano: sagittale (x-z) o frontale (y-z)
+  int plane = 1;
+  {
+    std::cout << "CIRCULAR: scegli il piano (INVIO = 1):\n"
+                 "  1) Sagittale (parallelo a x-z del drone)\n"
+                 "  2) Frontale (parallelo a y-z del drone)\n"
+                 "> ";
+    std::string line;
+    if (std::getline(std::cin, line) && !line.empty()) {
+      try {
+        plane = std::stoi(line);
+      } catch (...) {
+        plane = 1;
+      }
+    }
+    if (plane != 2) {
+      plane = 1;
+    }
+  }
+
   // Parametri input utente (solo raggio e tempo)
   std::string input;
 
@@ -613,16 +637,22 @@ void PlannerNode::run_circular_trajectory() {
   geometry_msgs::msg::Twist zero_twist; desired_ee_velocity_pub_->publish(zero_twist);
   RCLCPP_INFO(this->get_logger(), "Start EE world: [%.3f %.3f %.3f]", p_world0.x(), p_world0.y(), p_world0.z());
 
-  // Centro della circonferenza nel piano x-z DEL DRONE (fissato a t0):
   // assi del drone in world all'istante iniziale
   tf2::Quaternion q_drone0 = tf_drone_pose.getRotation();
   tf2::Vector3 ex_w = tf2::quatRotate(q_drone0, tf2::Vector3(1.0, 0.0, 0.0));
   tf2::Vector3 ey_w = tf2::quatRotate(q_drone0, tf2::Vector3(0.0, 1.0, 0.0));
   tf2::Vector3 ez_w = tf2::quatRotate(q_drone0, tf2::Vector3(0.0, 0.0, 1.0));
 
-  // Centro: traslato di R lungo -x_dronet0 a partire dalla posizione iniziale EE
-  tf2::Vector3 c_world_tf = p_world0 - R * ex_w;
-  RCLCPP_INFO(this->get_logger(), "Centro circonferenza (drone x-z) world: [%.3f %.3f %.3f]", c_world_tf.x(), c_world_tf.y(), c_world_tf.z());
+  tf2::Vector3 c_world_tf;
+  if (plane == 2) {
+    // Frontale (y-z): start al punto più basso del cerchio => p_world0 = c - R*ez
+    c_world_tf = p_world0 + R * ez_w;
+    RCLCPP_INFO(this->get_logger(), "Centro circonferenza (drone y-z) world: [%.3f %.3f %.3f]", c_world_tf.x(), c_world_tf.y(), c_world_tf.z());
+  } else {
+    // Sagittale (x-z): comportamento esistente
+    c_world_tf = p_world0 - R * ex_w;
+    RCLCPP_INFO(this->get_logger(), "Centro circonferenza (drone x-z) world: [%.3f %.3f %.3f]", c_world_tf.x(), c_world_tf.y(), c_world_tf.z());
+  }
 
   // Traiettoria con velocità angolare costante intorno all'asse y del drone (fissato a t0)
   const double omega = 2.0 * M_PI / T; // rad/s (1 giro in T)
@@ -636,11 +666,21 @@ void PlannerNode::run_circular_trajectory() {
     if (t < 0.0) t = 0.0;
     if (t > T_total) t = T_total;
 
-  // Parametrizzazione circolare nel piano x-z del drone a t0:
-  // p_des = c + R*cos(theta)*ex_w + R*sin(theta)*ez_w, con theta=omega*t
-  const double theta = omega * t;
-  tf2::Vector3 p_des_tf = c_world_tf + (std::cos(theta) * R) * ex_w + (std::sin(theta) * R) * ez_w;
-  tf2::Vector3 v_lin_tf = - omega * ey_w.cross(p_des_tf - c_world_tf);
+  tf2::Vector3 p_des_tf;
+  tf2::Vector3 v_lin_tf;
+  if (plane == 2) {
+    // Parametrizzazione circolare nel piano y-z del drone a t0.
+    // Start al punto più basso: theta0 = -pi/2.
+    const double theta = omega * t - (M_PI / 2.0);
+    p_des_tf = c_world_tf + (std::cos(theta) * R) * ey_w + (std::sin(theta) * R) * ez_w;
+    v_lin_tf = omega * ex_w.cross(p_des_tf - c_world_tf);
+  } else {
+    // Parametrizzazione circolare nel piano x-z del drone a t0:
+    // p_des = c + R*cos(theta)*ex_w + R*sin(theta)*ez_w, con theta=omega*t
+    const double theta = omega * t;
+    p_des_tf = c_world_tf + (std::cos(theta) * R) * ex_w + (std::sin(theta) * R) * ez_w;
+    v_lin_tf = - omega * ey_w.cross(p_des_tf - c_world_tf);
+  }
 
     // Pose world: posizione p_des, orientazione costante q_world_ee
   pose_msg.position.x = p_des_tf.x();
