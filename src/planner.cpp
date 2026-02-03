@@ -26,6 +26,23 @@ int read_positive_int_or_default(const std::string &prompt, int default_value)
     return default_value;
   }
 }
+
+double read_double_or_default(const std::string &prompt, double default_value)
+{
+  std::cout << prompt;
+  std::string line;
+  if (!std::getline(std::cin, line)) {
+    return default_value;
+  }
+  if (line.empty()) {
+    return default_value;
+  }
+  try {
+    return std::stod(line);
+  } catch (...) {
+    return default_value;
+  }
+}
 } // namespace
 
 
@@ -89,10 +106,11 @@ void PlannerNode::run() {
       std::cout << "1. Positioning" << std::endl;
       std::cout << "2. Circular trajectory (x-z plane)" << std::endl;
       std::cout << "3. Polyline trajectory" << std::endl;
+      std::cout << "4. Back-and-forth" << std::endl;
       std::cout << "> ";
       std::string input; std::getline(std::cin, input);
       try { option = std::stoi(input); } catch (...) { option = 0; }
-      if (option == 1 || option == 2 || option == 3) break;
+      if (option == 1 || option == 2 || option == 3 || option == 4) break;
       std::cout << "Opzione non valida. Riprova." << std::endl;
     }
     if (!rclcpp::ok()) break;
@@ -103,6 +121,194 @@ void PlannerNode::run() {
       run_circular_trajectory();
     } else if (option == 3) {
       run_polyline_trajectory();
+    } else if (option == 4) {
+      run_back_and_forth_trajectory();
+    }
+  }
+}
+
+void PlannerNode::run_back_and_forth_trajectory()
+{
+  // Specifica da planner_additions.md:
+  // - scelta piano: sagittale (parallelo a x-z del drone) default oppure frontale (parallelo a y-z del drone)
+  // - nel piano sagittale: segmento orizzontale (asse x) con punto medio (0.4, 0, 0.3) nel frame mobile_wx250s/base_link
+  // - nel piano frontale: segmento orizzontale (asse y) con punto medio (0.5, 0, 0.3) nel frame mobile_wx250s/base_link
+  // - lunghezza di default 30 cm (se INVIO o input invalido)
+  // - tempo tra pubblicazioni di default 2 s (se INVIO o input invalido)
+  // - per default pubblica 10 volte la coppia di endpoint (A poi B) con dt tra pubblicazioni
+  // - pubblica SOLO su /desired_ee_global_pose
+
+  // 0) Selezione piano
+  int plane = 1;
+  {
+    std::cout << "BACK-AND-FORTH: scegli il piano (INVIO = 1):\n"
+                 "  1) Sagittale (parallelo a x-z del drone)\n"
+                 "  2) Frontale (parallelo a y-z del drone)\n"
+                 "> ";
+    std::string line;
+    if (std::getline(std::cin, line) && !line.empty()) {
+      try {
+        plane = std::stoi(line);
+      } catch (...) {
+        plane = 1;
+      }
+    }
+    if (plane != 2) {
+      plane = 1;
+    }
+  }
+
+  double length_cm = read_double_or_default(
+    "BACK-AND-FORTH: lunghezza segmento [cm] (INVIO = 30):\n> ", 30.0);
+  if (!(length_cm > 0.0) || !std::isfinite(length_cm)) {
+    length_cm = 30.0;
+  }
+  const double length_m = length_cm / 100.0;
+
+  double dt_s = read_double_or_default(
+    "BACK-AND-FORTH: tempo tra due pubblicazioni [s] (INVIO = 2.0):\n> ", 2.0);
+  if (!(dt_s > 0.0) || !std::isfinite(dt_s)) {
+    dt_s = 2.0;
+  }
+
+  constexpr int kNumPairs = 10;
+  const int num_pubs = 2 * kNumPairs;
+
+  // Attendi pose drone
+  rclcpp::Rate wait_rate(10);
+  while (rclcpp::ok() && (!has_vehicle_local_position_ || !has_vehicle_attitude_)) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "In attesa della posa del drone...");
+    rclcpp::spin_some(this->get_node_base_interface());
+    wait_rate.sleep();
+  }
+  if (!rclcpp::ok()) {
+    return;
+  }
+
+  // Trasformazione statica base_link(drone) -> mobile_wx250s/base_link
+  pinocchio::forwardKinematics(model_, data_, pinocchio::neutral(model_));
+  pinocchio::updateFramePlacements(model_, data_);
+  const pinocchio::FrameIndex arm_base_frame_id = model_.getFrameId("mobile_wx250s/base_link");
+  const pinocchio::SE3 &T_base_to_arm_base = data_.oMf[arm_base_frame_id];
+
+  tf2::Transform tf_base_to_arm_base_tf2;
+  tf_base_to_arm_base_tf2.setOrigin({T_base_to_arm_base.translation().x(),
+                                     T_base_to_arm_base.translation().y(),
+                                     T_base_to_arm_base.translation().z()});
+  Eigen::Quaterniond q_base(T_base_to_arm_base.rotation());
+  q_base.normalize();
+  tf2::Quaternion q_tf(q_base.x(), q_base.y(), q_base.z(), q_base.w());
+  tf_base_to_arm_base_tf2.setRotation(q_tf);
+
+  // Orientazione EE da mantenere costante: usa /ee_world_pose se disponibile, altrimenti FK
+  // Remark: l'orientazione agli endpoint deve essere quella all'inizio della traiettoria,
+  // cioè dopo che l'utente ha finito di impostare i parametri via CLI (plane/length/dt).
+  Eigen::Quaterniond q_world_ee(1.0, 0.0, 0.0, 0.0);
+  // prova ad aspettare brevemente la posa EE pubblicata dal controller
+  rclcpp::spin_some(this->get_node_base_interface());
+  const double ee_wait_timeout_s = 0.5;
+  rclcpp::Time ee_wait_t0 = this->now();
+  while (rclcpp::ok() && !has_current_ee_pose_ && (this->now() - ee_wait_t0).seconds() < ee_wait_timeout_s) {
+    rclcpp::spin_some(this->get_node_base_interface());
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  if (has_current_ee_pose_) {
+    Eigen::Quaterniond q_start(current_ee_pose_.orientation.w,
+                               current_ee_pose_.orientation.x,
+                               current_ee_pose_.orientation.y,
+                               current_ee_pose_.orientation.z);
+    q_start.normalize();
+    q_world_ee = q_start;
+  } else {
+    // Attendi (breve) joint states
+    rclcpp::Rate r(50);
+    for (int i = 0; i < 50 && rclcpp::ok() && !has_joint_state_; ++i) {
+      rclcpp::spin_some(this->get_node_base_interface());
+      r.sleep();
+    }
+
+    Eigen::VectorXd q = pinocchio::neutral(model_);
+    // Base dalla posa del drone
+    q[0] = vehicle_local_position_.x;
+    q[1] = vehicle_local_position_.y;
+    q[2] = vehicle_local_position_.z;
+    q[3] = vehicle_attitude_.q[1];
+    q[4] = vehicle_attitude_.q[2];
+    q[5] = vehicle_attitude_.q[3];
+    q[6] = vehicle_attitude_.q[0];
+    if (has_joint_state_) {
+      for (size_t i = 0; i < current_joint_state_.name.size(); ++i) {
+        const auto &jname = current_joint_state_.name[i];
+        if (!model_.existJointName(jname)) {
+          continue;
+        }
+        const pinocchio::JointIndex jid = model_.getJointId(jname);
+        const int idx_q = static_cast<int>(model_.joints[jid].idx_q());
+        if (idx_q >= 7 && idx_q < q.size() && i < current_joint_state_.position.size()) {
+          q[idx_q] = current_joint_state_.position[i];
+        }
+      }
+    }
+
+    pinocchio::forwardKinematics(model_, data_, q);
+    pinocchio::updateFramePlacements(model_, data_);
+    const pinocchio::SE3 &T_world_ee_now = data_.oMf[ee_frame_id_];
+    Eigen::Quaterniond q_fk(T_world_ee_now.rotation());
+    q_fk.normalize();
+    q_world_ee = q_fk;
+  }
+
+  // Endpoint locali nel frame mobile_wx250s/base_link
+  const Eigen::Vector3d mid_local = (plane == 2) ? Eigen::Vector3d(0.5, 0.0, 0.3)
+                                                : Eigen::Vector3d(0.4, 0.0, 0.3);
+  const double half = 0.5 * length_m;
+  const Eigen::Vector3d A_local = (plane == 2) ? Eigen::Vector3d(mid_local.x(), mid_local.y() + half, mid_local.z())
+                                               : Eigen::Vector3d(mid_local.x() + half, mid_local.y(), mid_local.z());
+  const Eigen::Vector3d B_local = (plane == 2) ? Eigen::Vector3d(mid_local.x(), mid_local.y() - half, mid_local.z())
+                                               : Eigen::Vector3d(mid_local.x() - half, mid_local.y(), mid_local.z());
+
+  RCLCPP_INFO(this->get_logger(),
+              "Back-and-forth: plane=%s, length=%.1f cm, dt=%.2f s, pairs=%d (pub=%d)",
+              (plane == 2 ? "frontale(y-z)" : "sagittale(x-z)"), length_cm, dt_s, kNumPairs, num_pubs);
+  RCLCPP_INFO(this->get_logger(),
+              "Local endpoints (base_link): A=[%.3f %.3f %.3f], B=[%.3f %.3f %.3f]",
+              A_local.x(), A_local.y(), A_local.z(), B_local.x(), B_local.y(), B_local.z());
+
+  for (int i = 0; i < num_pubs && rclcpp::ok(); ++i) {
+    // aggiorna eventuali callback (posa drone)
+    rclcpp::spin_some(this->get_node_base_interface());
+
+    geometry_msgs::msg::Pose drone_pose;
+    drone_pose.position.x = vehicle_local_position_.x;
+    drone_pose.position.y = vehicle_local_position_.y;
+    drone_pose.position.z = vehicle_local_position_.z;
+    drone_pose.orientation.x = vehicle_attitude_.q[1];
+    drone_pose.orientation.y = vehicle_attitude_.q[2];
+    drone_pose.orientation.z = vehicle_attitude_.q[3];
+    drone_pose.orientation.w = vehicle_attitude_.q[0];
+    tf2::Transform tf_drone_pose;
+    tf2::fromMsg(drone_pose, tf_drone_pose);
+
+    const Eigen::Vector3d &p_local = ((i % 2) == 0) ? A_local : B_local;
+    const tf2::Vector3 p_local_tf(p_local.x(), p_local.y(), p_local.z());
+
+    const tf2::Transform tf_world_from_arm_base = tf_drone_pose * tf_base_to_arm_base_tf2;
+    const tf2::Vector3 p_world_tf = tf_world_from_arm_base * p_local_tf;
+
+    geometry_msgs::msg::Pose out;
+    out.position.x = p_world_tf.x();
+    out.position.y = p_world_tf.y();
+    out.position.z = p_world_tf.z();
+    out.orientation.x = q_world_ee.x();
+    out.orientation.y = q_world_ee.y();
+    out.orientation.z = q_world_ee.z();
+    out.orientation.w = q_world_ee.w();
+
+    desired_ee_global_pose_pub_->publish(out);
+
+    if (i + 1 < num_pubs) {
+      std::this_thread::sleep_for(std::chrono::duration<double>(dt_s));
     }
   }
 }
