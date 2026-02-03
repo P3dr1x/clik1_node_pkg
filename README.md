@@ -69,7 +69,9 @@ Now the user will be asked to choose which action to perform with the end-effect
 1. If `Positioning` is chosen, user will be asked to type the desired EE pose w.r.t. the current pose of the manipulator base. The user has to type 7 numbers (desired position + quaternion). 
 If no or invalid input is given by the user, the desired relative EE pose commanded will be `{0.45 0.0 0.36 0 0 0 1}`.
 2. If `Circular trajectory (x-z plane)` is chosen, the user will be asked to insert 2 parameters of the trajectory (radius of the trajectory and time of completion). The trajectory will begin from the current EE pose.
+The user can also specify how many times to repeat the circular trajectory (default: 1 if Enter is pressed).
 3. If `Polyline trajectory` is chosen, the user will be asked to input the trajectory waypoints coordinates. If Enter is pressed, a default trajectory will be commanded (a rectangle). The end-effector will go in each commanded waypoint through a linear path. The user can also choose the time of travel for the segments in the path.
+The user can also specify how many times to repeat the polyline trajectory (default: 1 if Enter is pressed).
 
 For running the controller 
 
