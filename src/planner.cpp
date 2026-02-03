@@ -1,11 +1,32 @@
 #include "clik1_node_pkg/planner.hpp"
 #include <string>
+#include <algorithm>
 #include "pinocchio/algorithm/frames.hpp"
 #include "pinocchio/algorithm/kinematics.hpp"
 #include "pinocchio/parsers/urdf.hpp"
 #include <chrono>
 #include <cmath>
 #include "geometry_msgs/msg/pose_stamped.hpp"
+
+namespace {
+int read_positive_int_or_default(const std::string &prompt, int default_value)
+{
+  std::cout << prompt;
+  std::string line;
+  if (!std::getline(std::cin, line)) {
+    return default_value;
+  }
+  if (line.empty()) {
+    return default_value;
+  }
+  try {
+    const int v = std::stoi(line);
+    return std::max(1, v);
+  } catch (...) {
+    return default_value;
+  }
+}
+} // namespace
 
 
 PlannerNode::PlannerNode() : Node("planner"), tf_buffer_(this->get_clock()), tf_listener_(tf_buffer_) {
@@ -281,6 +302,10 @@ void PlannerNode::run_circular_trajectory() {
     T = 10.0;
   }
 
+  const int repeats = read_positive_int_or_default(
+      "Numero di ripetizioni (INVIO = 1):\n> ", 1);
+  const double T_total = T * static_cast<double>(repeats);
+
   // Attendi pose drone
   rclcpp::Rate wait_rate(10);
   while (rclcpp::ok() && (!has_vehicle_local_position_ || !has_vehicle_attitude_)) {
@@ -394,7 +419,7 @@ void PlannerNode::run_circular_trajectory() {
   RCLCPP_INFO(this->get_logger(), "Centro circonferenza (drone x-z) world: [%.3f %.3f %.3f]", c_world_tf.x(), c_world_tf.y(), c_world_tf.z());
 
   // Traiettoria con velocità angolare costante intorno all'asse y del drone (fissato a t0)
-  const double omega = 2.0 * M_PI / T; // rad/s
+  const double omega = 2.0 * M_PI / T; // rad/s (1 giro in T)
   rclcpp::Rate rate(100); // 100 Hz
   rclcpp::Time t0_ros = this->now();
   geometry_msgs::msg::Pose pose_msg;
@@ -403,7 +428,7 @@ void PlannerNode::run_circular_trajectory() {
     rclcpp::Time now_ros = this->now();
     double t = (now_ros - t0_ros).seconds();
     if (t < 0.0) t = 0.0;
-    if (t > T) t = T;
+    if (t > T_total) t = T_total;
 
   // Parametrizzazione circolare nel piano x-z del drone a t0:
   // p_des = c + R*cos(theta)*ex_w + R*sin(theta)*ez_w, con theta=omega*t
@@ -431,7 +456,7 @@ void PlannerNode::run_circular_trajectory() {
   desired_ee_global_pose_pub_->publish(pose_msg);
   desired_ee_velocity_pub_->publish(vel_msg);
 
-  if (t >= T) break;
+  if (t >= T_total) break;
     rate.sleep();
   }
   // Fine traiettoria: pubblica velocità nulla e ultima posa per fermo dolce
@@ -496,6 +521,9 @@ void PlannerNode::run_polyline_trajectory() {
   std::string input; std::getline(std::cin, input);
   double Tseg = 5.0; try { if (!input.empty()) Tseg = std::stod(input); } catch (...) {}
   if (Tseg <= 0.0) Tseg = 5.0;
+
+  const int repeats = read_positive_int_or_default(
+      "Numero di ripetizioni della polyline (INVIO = 1):\n> ", 1);
 
   // 3) Attesa posa drone
   rclcpp::Rate wait_rate(10);
@@ -584,6 +612,20 @@ void PlannerNode::run_polyline_trajectory() {
     return;
   }
 
+  // Espandi la lista dei waypoints per ripetere la traiettoria.
+  // Nota: per ripetizioni > 1 viene aggiunto un tratto di rientro dall'ultimo WP al primo WP
+  // (linearmente, come gli altri segmenti), poi la sequenza riparte.
+  if (repeats > 1) {
+    const std::vector<WP> base = wps_local;
+    wps_local.clear();
+    wps_local.reserve(base.size() + static_cast<size_t>(repeats - 1) * (base.size() + 1));
+    wps_local.insert(wps_local.end(), base.begin(), base.end());
+    for (int k = 1; k < repeats; ++k) {
+      wps_local.push_back(base.front());
+      wps_local.insert(wps_local.end(), base.begin() + 1, base.end());
+    }
+  }
+
   // 5) Pubblica il primo waypoint come posa iniziale e vel zero
   auto to_world_pose = [&](const WP& wp)->geometry_msgs::msg::Pose{
     // locale -> world usando frozen transform
@@ -630,7 +672,7 @@ void PlannerNode::run_polyline_trajectory() {
   geometry_msgs::msg::Twist zero; desired_ee_velocity_pub_->publish(zero);
 
   rclcpp::Rate rate(100); // 100 Hz
-  RCLCPP_INFO(this->get_logger(), "Avvio polyline con %zu waypoints, T per tratto = %.2f s", wps_local.size(), Tseg);
+  RCLCPP_INFO(this->get_logger(), "Avvio polyline con %zu waypoints (ripetizioni=%d), T per tratto = %.2f s", wps_local.size(), repeats, Tseg);
 
   auto scurve = [&](double t, double T){
     double s = 0.5 * (1.0 - std::cos(M_PI * t / T));
