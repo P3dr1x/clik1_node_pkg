@@ -32,6 +32,7 @@ private:
   void get_and_transform_desired_pose(); // Copiata identica da clik_uam_node.cpp
   void run_circular_trajectory();
   void run_polyline_trajectory();
+  void run_back_and_forth_trajectory();
   void vehicle_local_position_callback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
   void vehicle_attitude_callback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
   void real_drone_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
