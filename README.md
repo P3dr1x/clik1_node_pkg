@@ -76,7 +76,7 @@ The user can also specify how many times to repeat the polyline trajectory (defa
 For running the controller 
 
 ```bash
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err:=50.0
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p  control_rate_hz:=120.0 -p redundant:=false -p use_h_uam:=false -p k_err:=50.0 -p w_kin:=1.0 -p w_mom:=0.0 -p qp_lambda_reg:=1e-3 -p w_com:=0.0
 ```
 
 
@@ -135,7 +135,7 @@ This should also open a Rviz session where it is possible to visualize the confi
 
 6. Run the controller
 ```bash
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p real_system:=true
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p  control_rate_hz:=120.0 -p redundant:=false -p use_h_uam:=false -p k_err:=50.0 -p w_kin:=1.0 -p w_mom:=0.0 -p qp_lambda_reg:=1e-3 -p w_com:=0.0
 ```
 7. Run the planner
 ```bash
