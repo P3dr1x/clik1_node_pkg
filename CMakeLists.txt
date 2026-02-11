@@ -65,7 +65,7 @@ target_include_directories(clik_uam_node PUBLIC
 )
 
 # Collega esplicitamente la libreria Eigen (FONDAMENTALE)
-target_link_libraries(clik_uam_node Eigen3::Eigen OsqpEigen::OsqpEigen)
+target_link_libraries(clik_uam_node Eigen3::Eigen OsqpEigen::OsqpEigen pinocchio::pinocchio)
 
 install(TARGETS
   clik_uam_node
