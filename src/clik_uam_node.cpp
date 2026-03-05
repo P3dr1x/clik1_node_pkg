@@ -222,6 +222,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
 
     // Guadagno unico per feedback errore EE (posizione + orientazione)
     declare_parameter("k_err", 20.0);
+    declare_parameter("k_com", 2.0);
     declare_parameter("damping", 1e-4);   // damping per pseudoinversa (Tikhonov)
     declare_parameter("qp_lambda_reg", 1e-2);
     declare_parameter("qp_vel_max_default", 2.0);
@@ -253,6 +254,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // Parametro per abilitare la null-space velocity qd_N = qd(k-1)
     this->declare_parameter<bool>("qd_N_prev", false);
     k_err_ = get_parameter("k_err").as_double();
+    k_com_ = get_parameter("k_com").as_double();
     qp_lambda_reg_ = get_parameter("qp_lambda_reg").as_double();
     qp_vel_max_default_ = get_parameter("qp_vel_max_default").as_double();
     double shoulder_w = get_parameter("shoulder_weight").as_double();
@@ -591,6 +593,9 @@ void ClikUamNode::update()
     last_update_time_ = now;
     dt = std::clamp(dt, 1e-4, 0.02); // evita divisione per 0, max 20ms
 
+    // Usato sia per reinizializzare l'integrazione che per resettare la reference del task CoM
+    const bool need_reinit_cmd = (!have_desired_msg_) || ((now - last_desired_msg_time_).seconds() > desired_timeout_sec_);
+
     // 1. AGGIORNA STATO DEL ROBOT 
     // q_.setZero();
 
@@ -646,6 +651,15 @@ void ClikUamNode::update()
     else
     {
         omega_base_local = Rwb.transpose() * omega_base_world;
+    }
+
+    // CoM del drone (solo base_link): posizione in WORLD
+    // Nota: usiamo l'offset di CoM dal modello (inertias[1]) espresso nel frame base_link.
+    Eigen::Vector3d p_Gb_world = q_.segment<3>(0);
+    if (model_.inertias.size() > 1) {
+        const Eigen::Vector3d r_Gb_base = model_.inertias[1].lever();
+        const Eigen::Vector3d r_Gb_world = Rwb * r_Gb_base;
+        p_Gb_world = q_.segment<3>(0) + r_Gb_world;
     }
 
     // 2. LEGGI POSIZIONI GIUNTI BRACCIO
@@ -741,8 +755,10 @@ void ClikUamNode::update()
     Eigen::Vector3d v_mom_task = Eigen::Vector3d::Zero();
     Eigen::Vector3d h_uam_term = Eigen::Vector3d::Zero();
 
-    // ==== Task opzionale: minimizzazione velocità CoM manipolatore ====
-    // v_com = J_com_arm * qdot_arm + J_com_b * v_base
+    // ==== Task opzionale: minimizzazione spostamento relativo e velocità assoluta del CoM manipolatore ====
+    // d = p_Gm - p_Gb (WORLD)
+    // v_Gm (WORLD)
+    // costo: || J_com_arm*qdot_arm - b_com ||, con b_com = v_Gm_des - (J_com_b*v_base_O)
     Eigen::MatrixXd J_com_arm(3, n_arm);
     J_com_arm.setZero();
     Eigen::Vector3d v_com_task = Eigen::Vector3d::Zero();
@@ -805,7 +821,29 @@ void ClikUamNode::update()
                 J_com_arm.col(i).setZero();
             }
         }
-        v_com_task.setZero(); // = -(Jcom_b * v_man.head(6));
+
+        if (w_com_ > 0.0) {
+            const Eigen::Vector3d p_Gm_world = data_man_.com[0];
+
+            // Reference dello spostamento relativo (inizio tracking o perdita riferimenti)
+            const Eigen::Vector3d d_cur = p_Gm_world - p_Gb_world;
+            if (!com_ref_initialized_ || need_reinit_cmd) {
+                d_com_ref_ = d_cur;
+                com_ref_initialized_ = true;
+            }
+
+            // v_Gm_des = Kp * (d_ref - d_cur)
+            // Nota: il termine di feedback nasce dal target sullo spostamento relativo d.
+            const Eigen::Vector3d v_Gm_des = k_com_ * (d_com_ref_ - d_cur);
+
+            // Parte costante della velocità CoM del manipolatore dovuta alla velocità della base (frame O)
+            const Eigen::Vector3d v_Gm_const_world = Jcom_b * v_man.head(6);
+
+            // J_com_arm*qdot_arm ~= v_Gm_des - v_Gm_const
+            v_com_task = v_Gm_des - v_Gm_const_world;
+        } else {
+            v_com_task.setZero();
+        }
 
         const Eigen::MatrixXd &Ag_man = data_man_.Ag; // 6 x (6+n_arm_man)
         const Eigen::MatrixXd A_p_man = Ag_man.topRows(3);
@@ -1074,7 +1112,7 @@ void ClikUamNode::update()
     }
 
     // 8. Integrazione diretta delle velocità QP -> comandi posizione giunti
-    const bool need_reinit = (!have_desired_msg_) || ((this->now() - last_desired_msg_time_).seconds() > desired_timeout_sec_);
+    const bool need_reinit = need_reinit_cmd;
     if (!arm_cmd_initialized_ || need_reinit) {
         arm_cmd_pos_.assign(arm_joints_.size(), 0.0);
         for (int i = 0; i < n_arm; ++i) {
