@@ -70,7 +70,7 @@ The user can also specify how many times to repeat the polyline trajectory (defa
 For running the controller 
 
 ```bash
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err_x_:=50.0
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p control_rate_hz:=120.0 -p redundant:=true -p k_err:=50.0
 ```
 
 
@@ -86,7 +86,7 @@ ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err_x_:=50.0
 Parameter      |Default value |   Description    |
 |-------------------|---------------|------------|
 | `use_gazebo_pose` | `true` | The node will try to subscribe to the `/world/default/dynamic_pose/info` topic bridged from Gazebo to ROS2 for getting the UAV pose. 
-| `k_err_x_` | `20.0` | Is the gain value for the EE feedback. 
+| `k_err` | `20.0` | Is the gain value for the EE feedback. 
 | `real_system` | `false` | In some nodes is this parameter that decides if to subscribe to the `/real_t960a_pose` topic.
 | `damping_` | `1e-4` | Damping parameter for damped pseudoinversion
 | `redundant` | `false` | Choose wether you want to command both position and orientation to the EE or only the position (in that case set `true`).
@@ -127,7 +127,7 @@ This should also open a Rviz session where it is possible to visualize the confi
 
 6. Run the controller
 ```bash
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p real_system:=true
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p real_system:=true -p control_rate_hz:=120.0 -p redundant:=true -p k_err:=10.0
 ```
 7. Run the planner
 ```bash
@@ -145,7 +145,7 @@ $$\dot{\mathbf{q}} = [\mathbf{J}_{\text{m}}]^{\dagger}(\mathbf{\nu}_{\text{e,des
 where:
 
 - $[\mathbf{J}_{\text{m}}]$ is the **Manipulator Jacobian matrix**.
-- $[\mathbf{K}]$ is the gain matrix. For now is simply `k_err_x_*Identity(6,6)`.
+- $[\mathbf{K}]$ is the gain matrix. For now is simply `k_err*Identity(6,6)`.
 - $\mathbf{e}_x$ is EE pose error vector. It is computed as $\mathbf{e}_x = \log ([\mathbf{T}_{w,e}]_{des}[\mathbf{T}_{w,e}]^{-1})$.
 
 For more info check the papers (please consider citing):

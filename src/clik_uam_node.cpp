@@ -118,7 +118,9 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     qd_.resize(model_.nv);
     J_.resize(6, model_.nv);
     arm_joints_ = {"waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"};
-    declare_parameter("k_err_x_", 50.0); // guadagno posizione traslazionale
+    // Gain for EE feedback.
+    // Preferred parameter name (used by uam_logger_node): k_err
+    declare_parameter("k_err", 50.0);
     declare_parameter("damping", 1e-4);   // damping per pseudoinversa (Tikhonov)
     // Parametri opzionali per pesi (spalla, forearm_roll, wrist_rotate hanno peso maggiore).
     declare_parameter("shoulder_weight", 15.0);
@@ -127,7 +129,8 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
         // Opzione per sfruttare ridondanza cinematica: segui solo la traiettoria di posizione (ignora orientazione)
         this->declare_parameter<bool>("redundant", false);
         redundant_ = this->get_parameter("redundant").as_bool();
-    k_err_x_ = get_parameter("k_err_x_").as_double();
+    const double k_err = get_parameter("k_err").as_double();
+    k_err_x_ = k_err;
     damping_ = get_parameter("damping").as_double();
     double shoulder_w = get_parameter("shoulder_weight").as_double();
     double forearm_w = get_parameter("forearm_weight").as_double();
