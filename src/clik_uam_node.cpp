@@ -244,9 +244,19 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     this->declare_parameter<double>("w_kin", 10.0);
     this->declare_parameter<double>("w_mom", 1.0);
     this->declare_parameter<double>("w_com", 0.0);
+    // Soft repulsion from joint limits through barrier functions
+    // Default disabled (w_lim=0.0) to preserve previous behavior.
+    this->declare_parameter<double>("w_lim", 0.0);
+    this->declare_parameter<double>("jlim_gain", 0.05);
+    this->declare_parameter<double>("jlim_margin", 0.3);
+    this->declare_parameter<double>("jlim_eps", 1e-3);
     w_kin_ = this->get_parameter("w_kin").as_double();
     w_mom_ = this->get_parameter("w_mom").as_double();
     w_com_ = this->get_parameter("w_com").as_double();
+    w_lim_ = this->get_parameter("w_lim").as_double();
+    jlim_gain_ = this->get_parameter("jlim_gain").as_double();
+    jlim_margin_ = this->get_parameter("jlim_margin").as_double();
+    jlim_eps_ = this->get_parameter("jlim_eps").as_double();
 
     // Abilita/disabilita il termine basato sul momento totale h_UAM nel task di momento (solo redundant=true)
     this->declare_parameter<bool>("use_h_uam", false);
@@ -1026,6 +1036,60 @@ void ClikUamNode::update()
         qp_gradient_.noalias() = -((w_kin * (J1.transpose() * b1)) +
                                   (w_mom * (J2.transpose() * b2)) +
                                   (w_com * (J3.transpose() * b3)));
+    }
+
+    // 7.b Soft repulsion from joint limits (barrier functions)
+    // Adds: w_lim * || qdot_arm - qdot_rep(q) ||^2
+    // where qdot_rep is a (gated) descent direction of a log-barrier.
+    {
+        const double w_lim = std::max(0.0, w_lim_);
+        const double margin = std::max(0.0, jlim_margin_);
+        const double eps = std::max(1e-12, jlim_eps_);
+        const double gain = std::max(0.0, jlim_gain_);
+
+        if (w_lim > 0.0 && gain > 0.0 && margin > 0.0 && have_position_limits_) {
+            Eigen::VectorXd qdot_rep(n_arm);
+            qdot_rep.setZero();
+
+            for (int i = 0; i < n_arm; ++i) {
+                if (!std::isfinite(q_lower_arm_[i]) || !std::isfinite(q_upper_arm_[i])) {
+                    qdot_rep[i] = 0.0;
+                    continue;
+                }
+
+                const double q_i = qp_q_arm_meas_[i];
+                const double d_lower = q_i - q_lower_arm_[i];
+                const double d_upper = q_upper_arm_[i] - q_i;
+
+                double term_lower = 0.0;
+                double term_upper = 0.0;
+
+                if (d_lower < margin) {
+                    term_lower = 1.0 / std::max(d_lower, eps);
+                }
+                if (d_upper < margin) {
+                    term_upper = 1.0 / std::max(d_upper, eps);
+                }
+
+                // Descent direction of: -log(d_lower) - log(d_upper)
+                // qdot_rep = gain * (1/d_lower - 1/d_upper) (gated by margin)
+                double qdot_i = gain * (term_lower - term_upper);
+
+                // Clamp the reference within velocity limits (same used in bounds)
+                double vlim = 0.0;
+                if (have_velocity_limits_) vlim = v_limit_arm_[i];
+                if (!(vlim > 0.0)) vlim = qp_vel_max_default_;
+                const double dq_min = -std::abs(vlim);
+                const double dq_max =  std::abs(vlim);
+                qdot_i = std::clamp(qdot_i, dq_min, dq_max);
+
+                qdot_rep[i] = qdot_i;
+            }
+
+            // Add quadratic attraction toward qdot_rep
+            qp_P_dense_.diagonal().array() += w_lim;
+            qp_gradient_.noalias() += -(w_lim * qdot_rep);
+        }
     }
 
     // Bounds l/u

@@ -76,7 +76,7 @@ The user can also specify how many times to repeat the polyline trajectory (defa
 For running the controller 
 
 ```bash
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p  control_rate_hz:=120.0 -p redundant:=false -p use_h_uam:=false -p k_err:=50.0 -p w_kin:=1.0 -p w_mom:=0.0 -p qp_lambda_reg:=1e-3 -p w_com:=0.0
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p  control_rate_hz:=120.0 -p redundant:=false -p use_h_uam:=false -p k_err:=50.0 -p w_kin:=1.0 -p w_mom:=0.0 -p qp_lambda_reg:=1e-3 -p w_com:=0.0 -p k_com:=10.0 -p w_lim:=1e-2 -p jlim_gain:=0.05
 ```
 
 
@@ -135,7 +135,7 @@ This should also open a Rviz session where it is possible to visualize the confi
 
 6. Run the controller
 ```bash
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p use_gazebo_pose:=false -p real_system:=true -p  control_rate_hz:=120.0 -p redundant:=true -p use_h_uam:=false -p k_err:=20.0 -p w_kin:=1.0 -p w_mom:=0.0 -p qp_lambda_reg:=1e-3 -p w_com:=1.0
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p use_gazebo_pose:=false -p real_system:=true -p  control_rate_hz:=120.0 -p redundant:=true -p use_h_uam:=false -p k_err:=20.0 -p w_kin:=1.0 -p w_mom:=0.0 -p qp_lambda_reg:=1e-3 -p w_com:=1.0 -p k_com:=10.0 -p w_lim:=1e-2 -p jlim_gain:=0.05
 ```
 7. Run the planner
 ```bash
@@ -160,6 +160,7 @@ $$
 w_{\text{kin}}\,\|\mathbf{J}_{\text{gen}}\dot{\mathbf{q}}_m-\dot{\boldsymbol{\nu}}_{ee,\text{des}}\|^2
 +w_{\text{mom}}\,\|\mathbf{J}_{\text{mom}}\dot{\mathbf{q}}_m-\mathbf{b}_{\text{mom}}\|^2
 +w_{\text{com}}\,\|\mathbf{J}_{G_{m}} \dot{\mathbf{q}}_m\|^2
++w_{\text{lim}}\,\|\dot{\mathbf{q}}_m-\dot{\mathbf{q}}_{\text{rep}}(\mathbf{q}_m)\|^2
 \Big)
 $$
 
@@ -176,6 +177,8 @@ and the kinematic task is selected by `redundant`:
 
 - If `redundant:=true`, the controller tracks only the EE position (linear part) with $`\mathbf{J}_{\text{gen},\text{lin}}`$ and $`\dot{\boldsymbol{\nu}}_{ee,\text{des}}`$ is the corresponding 3D linear velocity target.
 - If `redundant:=false`, the controller tracks the full EE pose (6D twist) with $`\mathbf{J}_{\text{gen}}`$ and $`\dot{\boldsymbol{\nu}}_{ee,\text{des}}`$ is the 6D twist target.
+
+The **joint-limit repulsion** term (enabled by setting `w_lim>0`) is a soft task that biases the solution away from joint position limits through a configuration-dependent reference velocity $\dot{\mathbf{q}}_{\text{rep}}(\mathbf{q}_m)$.
 
 ### Constraints (both modes)
 
@@ -208,7 +211,7 @@ where:
 - $\boldsymbol{\tau}_g$ is the gravity torque acting on the manipulator.
 - The reaction torque term $\boldsymbol{\tau}_R$ is set to zero (the goal is to minimize reaction torque).
 
-- $\mathbf{W}_1$ and $\mathbf{W}_2$ are the weight matrices that trade off between kinematic tracking and momentum task (implemented via scalar parameters `w_kin` and `w_mom`).
+- `w_kin`, `w_mom`, `w_com`, and `w_lim` are the scalar weights that trade off between kinematic tracking, momentum task, manipulator CoM task, and joint-limit repulsion (with diagonal regularization `qp_lambda_reg`).
 
 For more info check the papers (please consider citing):
 

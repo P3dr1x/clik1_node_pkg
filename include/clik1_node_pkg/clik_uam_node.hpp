@@ -161,6 +161,14 @@ private:
     double w_mom_ = 1.0;
     double w_com_ = 0.0;
 
+    // Soft repulsion from joint limits (barrier-based)
+    // Adds a quadratic term ||qdot_arm - qdot_rep(q)||^2 weighted by w_lim_
+    // qdot_rep is computed from a (gated) log barrier gradient.
+    double w_lim_ = 0.0;
+    double jlim_gain_ = 0.05;
+    double jlim_margin_ = 0.3;
+    double jlim_eps_ = 1e-3;
+
     // Reference for relative manipulator CoM displacement (Gm - Gb)
     bool com_ref_initialized_ = false;
     Eigen::Vector3d d_com_ref_{Eigen::Vector3d::Zero()};
