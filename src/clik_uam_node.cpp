@@ -228,7 +228,7 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     declare_parameter("qp_vel_max_default", 2.0);
     declare_parameter("qp_eps_ab", 1e-9);
     // Parametri opzionali per pesi (spalla, forearm_roll, wrist_rotate hanno peso maggiore).
-    declare_parameter("shoulder_weight", 15.0);
+    declare_parameter("shoulder_weight", 1.0);
     declare_parameter("forearm_weight", 25.0);
     declare_parameter("wrist_weight", 25.0);
     // Opzione ridondanza cinematica:
@@ -241,8 +241,8 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // - w_kin: tracking cinematico (Jgen)
     // - w_mom: minimizzazione reazione/momento (task di momento)
     // Nota: ponendo w_mom=0.0 si ottiene il caso puramente cinematico (QP-Jgen).
-    this->declare_parameter<double>("w_kin", 10.0);
-    this->declare_parameter<double>("w_mom", 1.0);
+    this->declare_parameter<double>("w_kin", 1.0);
+    this->declare_parameter<double>("w_mom", 0.0);
     this->declare_parameter<double>("w_com", 0.0);
     // Soft repulsion from joint limits through barrier functions
     // Default disabled (w_lim=0.0) to preserve previous behavior.

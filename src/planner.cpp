@@ -529,7 +529,7 @@ void PlannerNode::run_circular_trajectory() {
   double T = 0.0; try { T = std::stod(input); } catch (...) { T = 0.0; }
   if (T <= 0.0) {
     RCLCPP_WARN(this->get_logger(), "Tempo non valido. Imposto T=10.0 s");
-    T = 10.0;
+    T = 6.0;
   }
 
   const int repeats = read_positive_int_or_default(
