@@ -67,9 +67,6 @@ ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCom
 }"
 
 
-
-
-
 --------- COMANDARE IL BRACCIO IN UNA CONF "HOME" PIÙ `COMODA` (REALTÅ)---------------
 
 ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCommand "{
@@ -77,9 +74,23 @@ ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCom
   cmd: [0.0, -0.78, 0.52, 0.0, 0.26, 0.0]
 }"
 
---------- SETTARE I PROFILI DI VELOCITÀ DEI MOTORI ---------------------
+--------- COMANDARE IL BRACCIO ALLA CONF `COMODA` (REALTÅ) LENTAMENTE ---------------
+
+ros2 run clik1_node_pkg go_to_starting_configuration.py
+
+--------- COMANDARE IL BRACCIO ALLA CONF `COMODA` (REALTÅ) LENTAMENTE ---------------
+
+ros2 run clik1_node_pkg go_to_starting_configuration.py --q 0.0 -0.78 0.52 0.0 0.26 0.0
+
+
+--------- REBOOT DEI MOTORI -----------------------------
+
+ros2 service call /reboot_motors interbotix_xs_msgs/srv/Reboot "{cmd_type: 'group', name: 'arm'}"
+
+--------- SETTARE I PROFILI DI VELOCITÀ DEI MOTORI LENTO/VELOCE ---------------------
 
 ros2 service call /mobile_wx250s/set_operating_modes interbotix_xs_msgs/srv/OperatingModes "{cmd_type: 'group', name: 'arm', mode: 'position', profile_type: 'time', profile_velocity: 2000, profile_acceleration: 300}"
+ros2 service call /mobile_wx250s/set_operating_modes interbotix_xs_msgs/srv/OperatingModes "{cmd_type: 'group', name: 'arm', mode: 'position', profile_type: 'time', profile_velocity: 0, profile_acceleration: 0}"
 
 --------- REGISTRAZIONE ROS2 BAG ----------------------------------------
 
@@ -90,5 +101,5 @@ ros2 bag record -o clik_test /t960a/pose /joint_states /commands/joint_group /de
 
 --------- LANCIARE NODO DI CONTROLLO (esempio) ------------------------------------
 
-ros2 run clik1_node_pkg clik_uam_node --ros-args -p k_err:=50.0 -p  control_rate_hz:=120.0 \
--p redundant:=false -p use_h_uam:=false -p w_kin:=10.0 -p w_mom:=1.0 -p use_gz_odom:=false
+ros2 run clik1_node_pkg clik_uam_node --ros-args -p use_gz_odom:=false -p k_err:=10.0 -p  control_rate_hz:=120.0 \
+-p redundant:=false -p use_h_uam:=false -p w_kin:=1.0 -p w_com:=1.0 
