@@ -89,6 +89,7 @@ install(DIRECTORY
 # Installa gli script Python
 install(PROGRAMS
   scripts/send_sleep_pose.py
+  scripts/go_to_starting_configuration.py
   scripts/check_pinocchio.py
   DESTINATION lib/${PROJECT_NAME}
 )
