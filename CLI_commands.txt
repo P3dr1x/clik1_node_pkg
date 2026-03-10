@@ -48,10 +48,46 @@ ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCom
   cmd: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }"
 
+-- oppure(se giunti polso ruotano troppo) --
 
---------- SETTARE I PROFILI DI VELOCITÀ DEI MOTORI ---------------------
+ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCommand "{
+  name: 'arm',
+  cmd: [0.0, 0.0, 0.0, 3.14, 0.0, 3.14]
+}"
+
+
+--------- COMANDARE IL BRACCIO IN UNA CONF DI MEZZO CHE NON TOCCHI PER TERRA (REALTÅ)---------------
+
+ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCommand "{
+  name: 'arm',
+  cmd: [0.0, -1.52, 1.25, 0.0, 0.6, 0.0]
+}"
+
+
+--------- COMANDARE IL BRACCIO IN UNA CONF "HOME" PIÙ `COMODA` (REALTÅ)---------------
+
+ros2 topic pub --once /commands/joint_group interbotix_xs_msgs/msg/JointGroupCommand "{
+  name: 'arm',
+  cmd: [0.0, -0.78, 0.52, 0.0, 0.26, 0.0]
+}"
+
+--------- COMANDARE IL BRACCIO ALLA CONF `COMODA` (REALTÅ) LENTAMENTE ---------------
+
+ros2 run clik1_node_pkg go_to_starting_configuration.py
+
+--------- COMANDARE IL BRACCIO ALLA CONF `COMODA` (REALTÅ) LENTAMENTE ---------------
+
+ros2 run clik1_node_pkg go_to_starting_configuration.py --q 0.0 -0.78 0.52 0.0 0.26 0.0
+
+
+--------- REBOOT DEI MOTORI -----------------------------
+
+ros2 service call /reboot_motors interbotix_xs_msgs/srv/Reboot "{cmd_type: 'group', name: 'arm'}"
+
+--------- SETTARE I PROFILI DI VELOCITÀ DEI MOTORI LENTO/VELOCE ---------------------
 
 ros2 service call /mobile_wx250s/set_operating_modes interbotix_xs_msgs/srv/OperatingModes "{cmd_type: 'group', name: 'arm', mode: 'position', profile_type: 'time', profile_velocity: 2000, profile_acceleration: 300}"
+ros2 service call /mobile_wx250s/set_operating_modes interbotix_xs_msgs/srv/OperatingModes "{cmd_type: 'group', name: 'arm', mode: 'position', profile_type: 'time', profile_velocity: 0, profile_acceleration: 0}"
 
 --------- REGISTRAZIONE ROS2 BAG ----------------------------------------
 
