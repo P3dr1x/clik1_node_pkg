@@ -181,9 +181,9 @@ class GoToStartingConfiguration(Node):
     def _wait_until_reached(
         self,
         target_positions: List[float],
-        tol_rad: float = 0.02,
+        tol_rad: float = 0.01,
         stable_required: int = 10,
-        timeout_sec: float = 15.0,
+        timeout_sec: float = 5.0,
     ) -> bool:
         start_time = time.time()
         stable_count = 0
