@@ -519,17 +519,17 @@ void PlannerNode::run_circular_trajectory() {
   double r_cm = 0.0; try { r_cm = std::stod(input); } catch (...) { r_cm = 0.0; }
   double R = r_cm / 100.0; // metri
   if (R <= 0.0 || R > 0.20) {
-    const char* forced = (R <= 0.0 ? "0.08 m" : "0.20 m");
+    const char* forced = (R <= 0.0 ? "0.10 m" : "0.20 m");
     RCLCPP_WARN(this->get_logger(), "Raggio fuori dai limiti (0 < R < 0.20 m). Imposto R=%s", forced);
-    R = (R <= 0.0 ? 0.08 : 0.20);
+    R = (R <= 0.0 ? 0.10 : 0.20);
   }
 
   std::cout << "Inserire TEMPO DI PERCORRENZA totale in secondi:\n> ";
   std::getline(std::cin, input);
   double T = 0.0; try { T = std::stod(input); } catch (...) { T = 0.0; }
   if (T <= 0.0) {
-    RCLCPP_WARN(this->get_logger(), "Tempo non valido. Imposto T=10.0 s");
-    T = 10.0;
+    RCLCPP_WARN(this->get_logger(), "Tempo non valido. Imposto T=4.0 s");
+    T = 4.0;
   }
 
   const int repeats = read_positive_int_or_default(
@@ -763,10 +763,10 @@ void PlannerNode::run_polyline_trajectory() {
   }
 
   // 2) Tempo massimo per ciascun tratto
-  std::cout << "Tempo massimo per ciascun tratto [s] (default 5.0):\n> ";
+  std::cout << "Tempo massimo per ciascun tratto [s] (default 1.0):\n> ";
   std::string input; std::getline(std::cin, input);
   double Tseg = 5.0; try { if (!input.empty()) Tseg = std::stod(input); } catch (...) {}
-  if (Tseg <= 0.0) Tseg = 5.0;
+  if (Tseg <= 0.0) Tseg = 1.0;
 
   const int repeats = read_positive_int_or_default(
       "Numero di ripetizioni della polyline (INVIO = 1):\n> ", 1);
