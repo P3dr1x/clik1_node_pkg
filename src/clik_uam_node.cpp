@@ -261,6 +261,11 @@ ClikUamNode::ClikUamNode() : Node("clik_uam_node"), tf_buffer_(this->get_clock()
     // Abilita/disabilita il termine basato sul momento totale h_UAM nel task di momento (solo redundant=true)
     this->declare_parameter<bool>("use_h_uam", false);
     use_h_uam_ = this->get_parameter("use_h_uam").as_bool();
+
+    // Abilita/disabilita il termine -J_b * Ab^{-1} * h_UAM nel task cinematico.
+    // h_UAM viene calcolato usando la funzione Pinocchio sullo stato misurato (q_, v_gen_meas_).
+    this->declare_parameter<bool>("use_h_uam_kin", false);
+    use_h_uam_kin_ = this->get_parameter("use_h_uam_kin").as_bool();
     // Parametro per abilitare la null-space velocity qd_N = qd(k-1)
     this->declare_parameter<bool>("qd_N_prev", false);
     k_err_ = get_parameter("k_err").as_double();
@@ -989,6 +994,19 @@ void ClikUamNode::update()
     Eigen::Matrix<double, 6, 1> v_ee_task_6d;
     v_ee_task_6d.segment<3>(0) = desired_ee_velocity_vec_.segment<3>(0) + k_err_ * e_pos;
     v_ee_task_6d.segment<3>(3) = desired_ee_velocity_vec_.segment<3>(3) + k_err_ * e_ang;
+
+    // Termine aggiuntivo per kinematic task: -J_b * Ab^{-1} * h_UAM
+    // con h_UAM calcolato tramite Pinocchio usando la velocità generalizzata misurata.
+    if (use_h_uam_kin_) {
+        pinocchio::computeCentroidalMomentum(model_, data_, q_, v_gen_meas_);
+        Eigen::Matrix<double, 6, 1> h_uam;
+        h_uam.segment<3>(0) = data_.hg.linear();
+        h_uam.segment<3>(3) = data_.hg.angular();
+
+        const Eigen::Matrix<double, 6, 1> Ab_inv_h_uam = Ab_reg.ldlt().solve(h_uam);
+        const Eigen::Matrix<double, 6, 1> nu_bias = J_b * Ab_inv_h_uam;
+        v_ee_task_6d.noalias() = v_ee_task_6d - nu_bias;
+    }
 
     qp_P_dense_.setZero();
     qp_gradient_.setZero();

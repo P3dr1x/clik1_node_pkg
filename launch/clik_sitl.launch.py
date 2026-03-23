@@ -33,6 +33,8 @@ def generate_launch_description():
         FindPackageShare('clik1_node_pkg'), 'config', 'modes.yaml'
     ]))
     load_configs = LaunchConfiguration('load_configs', default='true')
+    v_lp_tau = LaunchConfiguration('v_lp_tau', default='0.05')
+    omega_lp_tau = LaunchConfiguration('omega_lp_tau', default='0.05')
     #robot_description = LaunchConfiguration('robot_description', default='')
 
     # Avvio del processo PX4 SITL
@@ -177,7 +179,11 @@ def generate_launch_description():
         executable='real_drone_vel_pub',
         name='real_drone_vel_pub',
         output='screen',
-        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
+        parameters=[
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+            {'v_lp_tau': ParameterValue(v_lp_tau, value_type=float)},
+            {'omega_lp_tau': ParameterValue(omega_lp_tau, value_type=float)},
+        ],
         condition=UnlessCondition(use_gz_odom)
     )
 
@@ -219,6 +225,8 @@ def generate_launch_description():
             FindPackageShare('clik1_node_pkg'), 'config', 'modes.yaml'
         ]), description="Percorso al file di configurazione delle modalità."),
         DeclareLaunchArgument('load_configs', default_value='true', choices=['true', 'false'], description='Se true, carica i valori iniziali dei registri.'),
+        DeclareLaunchArgument('v_lp_tau', default_value='0.05', description='Costante di tempo [s] del filtro passa-basso sulla velocità lineare pubblicata da real_drone_vel_pub (0 => no filtro).'),
+        DeclareLaunchArgument('omega_lp_tau', default_value='0.05', description='Costante di tempo [s] del filtro passa-basso sulla velocità angolare pubblicata da real_drone_vel_pub (0 => no filtro).'),
         #DeclareLaunchArgument('robot_description', default_value='', description='Descrizione URDF del robot.'),
         DeclareLaunchArgument('robot_model', default_value='mobile_wx250s', description='Modello del robot.'),
         DeclareLaunchArgument('robot_name', default_value='mobile_wx250s', description='Nome del robot.'),

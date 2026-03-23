@@ -176,6 +176,10 @@ private:
     // Se true, include il termine -A_KO,b^man * Ab^{-1} * h_UAM nel task di momento (solo redundant=true)
     bool use_h_uam_ = false;
 
+    // Se true, include il termine -J_b * Ab^{-1} * h_UAM nel task cinematico.
+    // h_UAM viene calcolato con Pinocchio tramite la velocità generalizzata misurata (v_gen_meas_).
+    bool use_h_uam_kin_ = false;
+
     // Parametri runtime
     std::string robot_name_;
     bool real_system_ = true;

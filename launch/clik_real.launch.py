@@ -38,6 +38,8 @@ def generate_launch_description():
     px4_agent_baud = LaunchConfiguration('px4_agent_baud', default='921600')
     microxrce_start_delay = LaunchConfiguration('microxrce_start_delay', default='10.0')
     vel_pub_start_delay = LaunchConfiguration('vel_pub_start_delay', default='5.0')
+    v_lp_tau = LaunchConfiguration('v_lp_tau', default='0.05')
+    omega_lp_tau = LaunchConfiguration('omega_lp_tau', default='0.05')
 
     # Paths to models
     pkg_share = get_package_share_directory('clik1_node_pkg')  
@@ -121,7 +123,11 @@ def generate_launch_description():
         executable='real_drone_vel_pub',
         name='real_drone_vel_pub',
         output='screen',
-        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
+        parameters=[
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+            {'v_lp_tau': ParameterValue(v_lp_tau, value_type=float)},
+            {'omega_lp_tau': ParameterValue(omega_lp_tau, value_type=float)},
+        ],
         condition=IfCondition(real_system)
     )
 
@@ -186,6 +192,8 @@ def generate_launch_description():
         DeclareLaunchArgument('px4_agent_baud', default_value='921600', description='Baudrate per MicroXRCEAgent.'),
         DeclareLaunchArgument('microxrce_start_delay', default_value='10.0', description='Ritardo (s) prima di avviare MicroXRCEAgent dopo xs_sdk_node.'),
         DeclareLaunchArgument('vel_pub_start_delay', default_value='10.0', description='Ritardo (s) prima di avviare real_drone_vel_pub dopo MicroXRCEAgent.'),
+        DeclareLaunchArgument('v_lp_tau', default_value='0.05', description='Costante di tempo [s] del filtro passa-basso sulla velocità lineare pubblicata da real_drone_vel_pub (0 => no filtro).'),
+        DeclareLaunchArgument('omega_lp_tau', default_value='0.05', description='Costante di tempo [s] del filtro passa-basso sulla velocità angolare pubblicata da real_drone_vel_pub (0 => no filtro).'),
         # Be sure that MicroXRCEAgent is exposing PX4 topic on ROS2
         DeclareLaunchArgument('use_rviz', default_value='false', choices=['true', 'false'], description='Lancia RViz se true.'),
     delayed_microxrce_agent,

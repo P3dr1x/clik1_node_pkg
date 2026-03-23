@@ -99,6 +99,7 @@ Parameter      |Default value |   Description    |
 | `w_kin` | `10.0` | Weight of the kinematic tracking task.
 | `w_mom` | `1.0` | Weight of the momentum-based task.
 | `w_com` | `0.0` | Weight of the manipulator CoM velocity minimization task.
+| `use_h_uam_kin` | `false` | If `true`, adds the term $-J_b A_b^{-1} h_{UAM}$ to the kinematic task reference, with $h_{UAM}$ computed via Pinocchio from the measured generalized velocity.
 | `control_rate_hz` | `100.0` | Frequency at which the `update()` loop of the controller node will operate.
 | `<joint_name>_weight` | `15.0`, `25.0` | Set the weight of the specific joint. This influences the weight matrix used in the weighted pseudoinversion. You can choose `shoulder`, `forearm_roll`, `wrist_rotate` joints.
 
@@ -128,7 +129,7 @@ sudo systemctl start mavlink-router
 
 5. Launch 
 ```bash
-ros2 launch clik1_node_pkg clik_real.launch.py px4_agent_dev:=/dev/ttyUSB1
+ros2 launch clik1_node_pkg clik_real.launch.py px4_agent_dev:=/dev/ttyUSB1 v_lp_tau:=0.05 omega_lp_tau:=0.08
 ```
 
 This should also open a Rviz session where it is possible to visualize the configuration of the UAM in real-time.

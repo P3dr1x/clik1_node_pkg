@@ -3,6 +3,7 @@
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <algorithm>
 #include <cmath>
 
 // Nodo: real_drone_vel_pub
@@ -19,6 +20,13 @@ public:
     using std::placeholders::_1;
     RCLCPP_INFO(get_logger(), "Avvio real_drone_vel_pub");
 
+    // Parametri filtro passa-basso (0 => no filtro)
+    this->declare_parameter<double>("v_lp_tau", 0.05);     // [s]
+    this->declare_parameter<double>("omega_lp_tau", 0.05); // [s]
+    v_lp_tau_ = this->get_parameter("v_lp_tau").as_double();
+    omega_lp_tau_ = this->get_parameter("omega_lp_tau").as_double();
+    RCLCPP_INFO(get_logger(), "v_lp_tau=%.3f s, omega_lp_tau=%.3f s", v_lp_tau_, omega_lp_tau_);
+
     twist_pub_ = create_publisher<geometry_msgs::msg::Twist>("/real_t960a_twist", 10);
 
     vehicle_odom_sub_ = create_subscription<px4_msgs::msg::VehicleOdometry>(
@@ -27,6 +35,15 @@ public:
   }
 
 private:
+  static Eigen::Vector3d lowpassIIR(const Eigen::Vector3d &x_raw, const Eigen::Vector3d &x_prev,
+                                   double dt, double tau) {
+    if (!(tau > 0.0) || !(dt > 0.0)) {
+      return x_raw;
+    }
+    const double alpha = std::exp(-dt / tau);
+    return alpha * x_prev + (1.0 - alpha) * x_raw;
+  }
+
   void vehicle_odom_cb(const px4_msgs::msg::VehicleOdometry::SharedPtr msg) {
     vehicle_odom_ = *msg;
     has_odom_ = true;
@@ -52,10 +69,37 @@ private:
       return;
     }
 
+    // dt del filtro: usa timestamp PX4 (microsecondi) se disponibile; fallback su now()
+    double dt_f = 0.0;
+    const uint64_t t_us = static_cast<uint64_t>(vehicle_odom_.timestamp);
+    if (t_us != 0u && last_odom_timestamp_us_ != 0u && t_us > last_odom_timestamp_us_) {
+      dt_f = 1e-6 * static_cast<double>(t_us - last_odom_timestamp_us_);
+    } else if (last_now_init_) {
+      dt_f = (this->now() - last_now_).seconds();
+    }
+    if (dt_f > 0.0) {
+      dt_f = std::min(std::max(dt_f, 1e-4), 0.05);
+    }
+    last_odom_timestamp_us_ = t_us;
+    last_now_ = this->now();
+    last_now_init_ = true;
+
     // Velocità lineare: campo velocity in NED [N, E, D]
-    const double x_n = static_cast<double>(vehicle_odom_.velocity[0]);
-    const double y_e = static_cast<double>(vehicle_odom_.velocity[1]);
-    const double z_d = static_cast<double>(vehicle_odom_.velocity[2]);
+    Eigen::Vector3d v_raw_ned(
+        static_cast<double>(vehicle_odom_.velocity[0]),
+        static_cast<double>(vehicle_odom_.velocity[1]),
+        static_cast<double>(vehicle_odom_.velocity[2]));
+
+    if (v_filt_init_) {
+      v_filt_ned_ = lowpassIIR(v_raw_ned, v_filt_ned_, dt_f, v_lp_tau_);
+    } else {
+      v_filt_ned_ = v_raw_ned;
+      v_filt_init_ = true;
+    }
+
+    const double x_n = v_filt_ned_.x();
+    const double y_e = v_filt_ned_.y();
+    const double z_d = v_filt_ned_.z();
 
     const double cos_y0 = std::cos(yaw_offset_);
     const double sin_y0 = std::sin(yaw_offset_);
@@ -69,17 +113,25 @@ private:
 
     // Velocità angolare: campo angular_velocity in frame body FRD
     // Conversione FRD (Forward, Right, Down) -> FLU (Forward, Left, Up)
-    const double wx_flu = static_cast<double>(vehicle_odom_.angular_velocity[0]);
-    const double wy_flu = -static_cast<double>(vehicle_odom_.angular_velocity[1]);
-    const double wz_flu = -static_cast<double>(vehicle_odom_.angular_velocity[2]);
+    Eigen::Vector3d omega_raw_flu(
+        static_cast<double>(vehicle_odom_.angular_velocity[0]),
+        -static_cast<double>(vehicle_odom_.angular_velocity[1]),
+        -static_cast<double>(vehicle_odom_.angular_velocity[2]));
+
+    if (omega_filt_init_) {
+      omega_filt_flu_ = lowpassIIR(omega_raw_flu, omega_filt_flu_, dt_f, omega_lp_tau_);
+    } else {
+      omega_filt_flu_ = omega_raw_flu;
+      omega_filt_init_ = true;
+    }
 
     geometry_msgs::msg::Twist twist;
     twist.linear.x = x_world;
     twist.linear.y = y_world;
     twist.linear.z = z_world;
-    twist.angular.x = wx_flu;
-    twist.angular.y = wy_flu;
-    twist.angular.z = wz_flu;
+    twist.angular.x = omega_filt_flu_.x();
+    twist.angular.y = omega_filt_flu_.y();
+    twist.angular.z = omega_filt_flu_.z();
 
     twist_pub_->publish(twist);
   }
@@ -91,6 +143,21 @@ private:
   bool has_odom_{false};
   bool yaw_offset_initialized_{false};
   double yaw_offset_{0.0};
+
+  // Parametri filtro
+  double v_lp_tau_{0.05};
+  double omega_lp_tau_{0.05};
+
+  // Stato filtro
+  bool v_filt_init_{false};
+  Eigen::Vector3d v_filt_ned_{0.0, 0.0, 0.0};
+  bool omega_filt_init_{false};
+  Eigen::Vector3d omega_filt_flu_{0.0, 0.0, 0.0};
+
+  // Tempo per dt
+  uint64_t last_odom_timestamp_us_{0u};
+  bool last_now_init_{false};
+  rclcpp::Time last_now_;
 };
 
 int main(int argc, char **argv) {
