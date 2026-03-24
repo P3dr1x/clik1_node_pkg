@@ -765,7 +765,7 @@ void PlannerNode::run_polyline_trajectory() {
   // 2) Tempo massimo per ciascun tratto
   std::cout << "Tempo massimo per ciascun tratto [s] (default 1.0):\n> ";
   std::string input; std::getline(std::cin, input);
-  double Tseg = 5.0; try { if (!input.empty()) Tseg = std::stod(input); } catch (...) {}
+  double Tseg = 1.0; try { if (!input.empty()) Tseg = std::stod(input); } catch (...) {}
   if (Tseg <= 0.0) Tseg = 1.0;
 
   const int repeats = read_positive_int_or_default(
@@ -806,8 +806,12 @@ void PlannerNode::run_polyline_trajectory() {
   // 4bis) Se richiesto default: costruisci la polyline di default con start = EE corrente via FK
   Eigen::Quaterniond q_world_ee_current(1,0,0,0);
   bool have_q_world_ee_current = false;
+  geometry_msgs::msg::Pose ee_pose_world_fk_at_start;
+  bool have_ee_pose_world_fk_at_start = false;
   if (use_default_polyline) {
-    // Attendi (breve) joint states; se non arrivano, usa configurazione neutra per FK
+    // Richiesta: ricava SEMPRE la posa iniziale dell'EE via FK (non usare /ee_world_pose,
+    // perché il controller potrebbe non essere avviato).
+    // Attendi (breve) joint states; se non arrivano, usa configurazione neutra per FK.
     rclcpp::Rate r(50);
     for (int i = 0; i < 50 && rclcpp::ok() && !has_joint_state_; ++i) {
       rclcpp::spin_some(this->get_node_base_interface());
@@ -815,7 +819,7 @@ void PlannerNode::run_polyline_trajectory() {
     }
 
     Eigen::VectorXd q = pinocchio::neutral(model_);
-    // Base dalla posa del drone
+    // Base dalla posa del drone (frozen al momento di avvio della traiettoria)
     q[0] = vehicle_local_position_.x;
     q[1] = vehicle_local_position_.y;
     q[2] = vehicle_local_position_.z;
@@ -834,21 +838,35 @@ void PlannerNode::run_polyline_trajectory() {
     }
     pinocchio::forwardKinematics(model_, data_, q);
     pinocchio::updateFramePlacements(model_, data_);
-  const pinocchio::SE3& T_world_ee_now = data_.oMf[ee_frame_id_];
-  q_world_ee_current = Eigen::Quaterniond(T_world_ee_now.rotation());
-  q_world_ee_current.normalize();
-  have_q_world_ee_current = true;
+    const pinocchio::SE3& T_world_ee_now = data_.oMf[ee_frame_id_];
+
+    // Salva posa world dell'EE via FK per usarla come start pubblicato.
+    ee_pose_world_fk_at_start.position.x = T_world_ee_now.translation().x();
+    ee_pose_world_fk_at_start.position.y = T_world_ee_now.translation().y();
+    ee_pose_world_fk_at_start.position.z = T_world_ee_now.translation().z();
+    Eigen::Quaterniond q_fk(T_world_ee_now.rotation());
+    q_fk.normalize();
+    ee_pose_world_fk_at_start.orientation.x = q_fk.x();
+    ee_pose_world_fk_at_start.orientation.y = q_fk.y();
+    ee_pose_world_fk_at_start.orientation.z = q_fk.z();
+    ee_pose_world_fk_at_start.orientation.w = q_fk.w();
+    have_ee_pose_world_fk_at_start = true;
+
+    q_world_ee_current = q_fk;
+    have_q_world_ee_current = true;
+
+    // Converte start EE world -> locale rispetto a arm_base congelata.
     tf2::Vector3 p_world(T_world_ee_now.translation().x(), T_world_ee_now.translation().y(), T_world_ee_now.translation().z());
     tf2::Vector3 p_local_tf = tf_world_from_arm_base0.inverse() * p_world;
-    Eigen::Vector3d p0_local(p_local_tf.x(), p_local_tf.y(), p_local_tf.z());
+    const Eigen::Vector3d p0_local(p_local_tf.x(), p_local_tf.y(), p_local_tf.z());
 
     // Costruisci la polyline di default: primo punto = p0_local, poi rettangolo x-z locale
     wps_local.clear();
     wps_local.push_back({p0_local, false, Eigen::Quaterniond(1,0,0,0)});
     wps_local.push_back({Eigen::Vector3d(0.45, 0.0, 0.38), false, Eigen::Quaterniond(1,0,0,0)});
-    wps_local.push_back({Eigen::Vector3d(0.45, 0.0, 0.2), false, Eigen::Quaterniond(1,0,0,0)});
-    wps_local.push_back({Eigen::Vector3d(0.25, 0.0, 0.2), false, Eigen::Quaterniond(1,0,0,0)});
-    wps_local.push_back({Eigen::Vector3d(0.25, 0.0, 0.38), false, Eigen::Quaterniond(1,0,0,0)});
+    wps_local.push_back({Eigen::Vector3d(0.45, 0.0, 0.23), false, Eigen::Quaterniond(1,0,0,0)});
+    wps_local.push_back({Eigen::Vector3d(0.275, 0.0, 0.23), false, Eigen::Quaterniond(1,0,0,0)});
+    wps_local.push_back({Eigen::Vector3d(0.275, 0.0, 0.38), false, Eigen::Quaterniond(1,0,0,0)});
     wps_local.push_back({Eigen::Vector3d(0.45, 0.0, 0.38), false, Eigen::Quaterniond(1,0,0,0)});
   }
 
@@ -861,14 +879,30 @@ void PlannerNode::run_polyline_trajectory() {
   // Espandi la lista dei waypoints per ripetere la traiettoria.
   // Nota: per ripetizioni > 1 viene aggiunto un tratto di rientro dall'ultimo WP al primo WP
   // (linearmente, come gli altri segmenti), poi la sequenza riparte.
+  auto same_wp = [](const WP& a, const WP& b) {
+    const double pos_eps = 1e-10;
+    if ((a.p - b.p).squaredNorm() > pos_eps) return false;
+    if (a.has_q != b.has_q) return false;
+    if (!a.has_q && !b.has_q) return true;
+    // Quaternioni considerati equivalenti anche a segno opposto.
+    const double dot = std::abs(a.q.dot(b.q));
+    return (1.0 - dot) < 1e-12;
+  };
+  auto append_wp_if_new = [&](std::vector<WP>& out, const WP& wp) {
+    if (out.empty() || !same_wp(out.back(), wp)) out.push_back(wp);
+  };
   if (repeats > 1) {
     const std::vector<WP> base = wps_local;
     wps_local.clear();
-    wps_local.reserve(base.size() + static_cast<size_t>(repeats - 1) * (base.size() + 1));
-    wps_local.insert(wps_local.end(), base.begin(), base.end());
-    for (int k = 1; k < repeats; ++k) {
-      wps_local.push_back(base.front());
-      wps_local.insert(wps_local.end(), base.begin() + 1, base.end());
+    wps_local.reserve(base.size() * static_cast<size_t>(repeats) + static_cast<size_t>(repeats));
+    for (int k = 0; k < repeats; ++k) {
+      if (k == 0) {
+        for (const auto& wp : base) append_wp_if_new(wps_local, wp);
+      } else {
+        // Rientro al primo waypoint e ripartenza: evita duplicati consecutivi
+        append_wp_if_new(wps_local, base.front());
+        for (size_t j = 1; j < base.size(); ++j) append_wp_if_new(wps_local, base[j]);
+      }
     }
   }
 
@@ -891,17 +925,18 @@ void PlannerNode::run_polyline_trajectory() {
 
   // Orientazione di riferimento: se il primo WP ha quaternione usalo, altrimenti prendi quella world del primo setpoint
   Eigen::Quaterniond q_world_ref(1,0,0,0);
-  // Prova ad aspettare brevemente la posa reale dell'EE pubblicata dal controller
-  const double ee_wait_timeout_s_poly = 0.5;
-  rclcpp::Time ee_wait_t0_poly = this->now();
-  while (rclcpp::ok() && !has_current_ee_pose_ && (this->now() - ee_wait_t0_poly).seconds() < ee_wait_timeout_s_poly) {
-    rclcpp::spin_some(this->get_node_base_interface());
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
 
   geometry_msgs::msg::Pose first_pose_world = to_world_pose(wps_local.front());
-  // Se disponiamo della posa reale dell'EE fornita dal controller, usala come start (misurata)
-  if (has_current_ee_pose_) {
+  // Start: per la polyline di default usa SEMPRE la posa EE via FK.
+  if (use_default_polyline && have_ee_pose_world_fk_at_start) {
+    first_pose_world = ee_pose_world_fk_at_start;
+    q_world_ref = Eigen::Quaterniond(first_pose_world.orientation.w,
+                                     first_pose_world.orientation.x,
+                                     first_pose_world.orientation.y,
+                                     first_pose_world.orientation.z);
+    q_world_ref.normalize();
+  } else if (has_current_ee_pose_) {
+    // Se disponiamo della posa reale dell'EE fornita dal controller, usala come start (misurata)
     first_pose_world = current_ee_pose_;
     q_world_ref = Eigen::Quaterniond(first_pose_world.orientation.w, first_pose_world.orientation.x, first_pose_world.orientation.y, first_pose_world.orientation.z);
   } else if (have_q_world_ee_current) {
